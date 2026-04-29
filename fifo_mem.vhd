@@ -45,8 +45,13 @@ architecture rtl of fifo_mem is
 	-- cycle ago", and combined with unconstrained timing on the read
 	-- path produced the stuck-at-0000 symptom.  16x12 trivially fits
 	-- in MLAB.
+	-- "logic" tells Quartus to implement the array in logic cells (LUT-
+	-- based registers) rather than any dedicated memory block.  "MLAB"
+	-- is still a RAM primitive and Quartus can still attach a registered
+	-- read port to it; "logic" is the correct value to guarantee a
+	-- purely combinational read path.
 	attribute ramstyle: string;
-	attribute ramstyle of mem: signal is "MLAB";
+	attribute ramstyle of mem: signal is "logic";
 begin
 
 	-- write port: synchronous on wclk

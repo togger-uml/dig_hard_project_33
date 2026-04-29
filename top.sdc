@@ -47,14 +47,15 @@ create_generated_clock -name clk_prod \
 # The two-flop pointer synchronizers and the dual-clock FIFO memory
 # implement a metastability-tolerant CDC, so static timing analysis
 # does not need to verify the path between the producer and consumer
-# clock domains.  Cut all paths in both directions.  The auto-named
-# PLL output clock is a base clock for clk_prod, so listing clk_prod
-# alone suffices via -include_generated_clocks semantics in the
-# producer group; we explicitly include any clock derived from the
-# PLL hierarchy to be safe.
+# clock domains.  Cut all paths in both directions.
+#
+# The approach below puts clk_50 in its own group and everything else
+# (the auto-named PLL output clock, clk_prod, and any other generated
+# clocks) in a second group.  Using [get_clocks -filter {NAME != ...}]
+# avoids having to hard-code the PLL clock's synthesised name.
 set_clock_groups -asynchronous \
-    -group [get_clocks clk_50] \
-    -group [get_clocks {clk_prod pll_inst|*}]
+    -group [get_clocks {clk_50}] \
+    -group [get_clocks -filter {NAME != "clk_50"}]
 
 # ---------------------------------------------------------------- #
 # I/O timing (loose constraints; outputs only drive on-board LEDs) #
