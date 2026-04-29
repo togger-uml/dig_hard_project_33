@@ -10,10 +10,11 @@ use ieee.numeric_std.all;
 --   Drives: FIFO read side, temperature_display
 --
 -- Producer domain  – adc_clk (clk_dft output of max10_adc, ≈1 MHz)
---   The 10 MHz ADC_CLK_10 pin is routed through a PLL (required by the
---   fiftyfivenm_adcblock primitive).  The max10_adc wrapper internally
---   divides the PLL output by 10 (clkdiv => 2), yielding ~1 MHz on
---   clk_dft.  All ADC-side logic is clocked by this derived clock.
+--   CLOCK_50 is fed into the PLL (50 MHz → ÷5 → 10 MHz output) which
+--   satisfies the fiftyfivenm_adcblock requirement for a PLL-sourced
+--   clock.  The max10_adc wrapper internally divides the PLL output by
+--   10 (clkdiv => 2), yielding ~1 MHz on clk_dft.  All ADC-side logic
+--   is clocked by this derived clock.
 --   Drives: adc_fsm, FIFO write side
 --
 -- Clock-domain crossing
@@ -23,17 +24,15 @@ use ieee.numeric_std.all;
 --
 -- Reset
 -- ─────
--- KEY(0) is the active-low asynchronous reset.  Each clock domain has
--- its own two-flop reset synchroniser so that flip-flops are released
--- from reset synchronously with respect to their own clock.
+-- KEY(0) is the active-low asynchronous reset.  The PLL areset is
+-- driven from the inverted KEY(0).  Both clock-domain reset
+-- synchronisers are additionally held in reset until the PLL locked
+-- signal asserts, ensuring no logic runs on an unstable clock.
 
 entity top is
 	port (
-		-- 50 MHz board oscillator (consumer clock domain)
+		-- 50 MHz board oscillator (consumer clock domain + PLL input)
 		CLOCK_50	: in	std_logic;
-
-		-- 10 MHz ADC reference clock
-		ADC_CLK_10	: in	std_logic;
 
 		-- Active-low push-buttons; KEY(0) = system reset
 		KEY			: in	std_logic_vector(1 downto 0);
@@ -56,8 +55,10 @@ architecture rtl of top is
 
 	component pll is
 		port (
+			areset	: in	std_logic;
 			inclk0	: in	std_logic;
-			c0		: out	std_logic
+			c0		: out	std_logic;
+			locked	: out	std_logic
 		);
 	end component pll;
 
@@ -126,7 +127,11 @@ architecture rtl of top is
 	signal pll_clk	: std_logic;   -- PLL output (10 MHz) → max10_adc
 	signal adc_clk	: std_logic;   -- max10_adc clk_dft (~1 MHz, producer)
 
-	-- Reset (active-low; KEY(0) drives both synchronisers)
+	-- PLL control
+	signal pll_areset	: std_logic;   -- active-high PLL reset (from KEY(0))
+	signal pll_locked	: std_logic;   -- PLL lock indicator
+
+	-- Reset (active-low; KEY(0) AND pll_locked drive both synchronisers)
 	signal rst_async_n	: std_logic;
 
 	-- Producer-domain reset synchroniser
@@ -149,8 +154,11 @@ architecture rtl of top is
 
 begin
 
-	-- KEY(0) is active-low; treat as asynchronous reset source
-	rst_async_n <= KEY(0);
+	-- KEY(0) is active-low; convert to active-high for PLL areset and
+	-- active-low for the domain reset synchronisers.
+	-- Hold both domain resets until the PLL has locked.
+	pll_areset  <= not KEY(0);
+	rst_async_n <= KEY(0) and pll_locked;
 
 	-- ----------------------------------------------------------------
 	-- Reset synchroniser – producer clock domain (adc_clk)
@@ -181,12 +189,15 @@ begin
 	end process sync_rst_50;
 
 	-- ----------------------------------------------------------------
-	-- PLL: routes ADC_CLK_10 through the FPGA PLL network
+	-- PLL: derives 10 MHz from the 50 MHz board oscillator
+	-- (CLOCK_50 ÷ 5 = 10 MHz) for the fiftyfivenm_adcblock primitive.
 	-- ----------------------------------------------------------------
 	pll_inst: pll
 		port map (
-			inclk0 => ADC_CLK_10,
-			c0     => pll_clk
+			areset => pll_areset,
+			inclk0 => CLOCK_50,
+			c0     => pll_clk,
+			locked => pll_locked
 		);
 
 	-- ----------------------------------------------------------------
