@@ -34,15 +34,13 @@ derive_pll_clocks
 derive_clock_uncertainty
 
 # 1 MHz producer clock generated inside the MAX10 ADC block by the
-# divide-by-10 prescaler (clkdiv = 2).  The clk_dft net in the
-# top-level connects to the ADC's divided clock output and drives
-# the producer-domain registers (adc_fsm, FIFO write pointers).
-# Using create_clock on the net is more reliable than
-# create_generated_clock on a hard-IP primitive output pin; the
-# latter can silently fail if the pin target path does not match
-# Quartus's internal naming, leaving the clock unconstrained and
-# triggering Critical Warning 332148.
-create_clock -period 1000.0 -name clk_prod [get_nets {clk_prod}]
+# divide-by-10 prescaler (clkdiv = 2).  clk_dft is routed through
+# a dedicated global clock buffer so it does NOT appear in get_nets;
+# using get_nets {clk_prod} returns an empty collection and silently
+# leaves the clock unconstrained (Warning 332174 / 332049).
+# Target the output pin of the hard-IP primitive directly instead.
+create_clock -period 1000.0 -name clk_prod \
+    [get_pins {adc_inst|primitive_instance|clk_dft}]
 
 # ---------------------------------------------------------------- #
 # Clock-domain-crossing exceptions                                 #

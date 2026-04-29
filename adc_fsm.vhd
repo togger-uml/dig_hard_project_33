@@ -21,12 +21,14 @@
 --                duration of the conversion -- a one-cycle pulse
 --                causes the conversion to abort and eoc never fires.
 --                On the eoc edge, transition to SAMPLE.
---   SAMPLE    -- one cycle after eoc.  dout has now settled past the
---                eoc-clearing edge.  Capture dout into sample_reg.
---                The diagnostic counter increments here so dbg_count
---                tallies one tick per real conversion.  Transition to
+--   SAMPLE    -- soc is held HIGH for one extra cycle past eoc.
+--                The fiftyfivenm_adcblock hard-IP clears dout on
+--                the cycle soc deasserts, so dropping soc here
+--                (the previous behaviour) caused every capture to
+--                read 0x000.  With soc='1', dout remains stable
+--                and is captured into sample_reg.  Transition to
 --                PUSH.
---   PUSH      -- one cycle after SAMPLE.  sample_reg holds a stable
+--   PUSH      -- soc deasserted; sample_reg holds a stable
 --                copy of dout.  If the FIFO has room, write it.
 --                Whether or not the write happens, return to IDLE.
 
@@ -72,15 +74,15 @@ architecture rtl of adc_fsm is
 	-- the MAX 10 ADC needs soc held high until eoc rises.  Fix:
 	-- hold soc across S_CONVERT.  Counter then ticked correctly
 	-- (HEX3 cycles 0..3 as the 12-bit dbg_count wraps).
-	-- Step 3: with debug_counter_mode=false the display read 0000.
-	-- Root cause: dout is updated by the ADC on the same rising edge
-	-- that eoc asserts, so capturing it then gives the previous
-	-- (initially zero) value.  Fix: add a dedicated S_SAMPLE state
-	-- so dout is registered into sample_reg one clk_dft cycle after
-	-- eoc, giving the ADC bus time to settle.  S_PUSH then writes
-	-- the stable sample_reg to the FIFO.  This eliminates the
-	-- one-sample lag of the earlier two-state approach and ensures
-	-- sample_reg is always valid when the FIFO write occurs.
+	-- Step 3 (debug_counter_mode=false, 3-state FSM): display 0000.
+	-- Root cause A: dout was captured on the eoc edge itself (S_PUSH
+	-- in the 3-state design), giving the pre-update (initially zero)
+	-- value.  Fix: added S_SAMPLE state so we capture one cycle later.
+	-- Root cause B (identified after S_SAMPLE was added and 0000
+	-- persisted): the fiftyfivenm_adcblock clears dout on the cycle
+	-- soc deasserts.  In S_SAMPLE soc was '0', so dout was already
+	-- cleared.  Fix: keep soc='1' in S_SAMPLE.  dout now holds the
+	-- completed conversion result for the capture.
 	-- Step 4: with the display_unit pop-timing bug fixed (it was
 	-- latching mem[rbin+1] instead of mem[rbin]), normal ADC
 	-- operation works again, so debug_counter_mode is set back to
@@ -122,9 +124,20 @@ begin
 				end if;
 
 			when S_SAMPLE =>
-				-- one cycle after eoc -> dout is now stable.
-				-- Latch it into sample_reg so S_PUSH can forward
-				-- a registered (glitch-free) value to the FIFO.
+				-- Keep soc asserted one more cycle after eoc so
+				-- the ADC hard-IP continues to hold dout stable.
+				-- The fiftyfivenm_adcblock clears dout on the
+				-- cycle soc deasserts; dropping soc in S_SAMPLE
+				-- (soc='0' by default) therefore caused every
+				-- capture to read 0x000 instead of the real
+				-- conversion result.  Asserting soc='1' here
+				-- either keeps the ADC in its post-conversion
+				-- idle state (dout holds) or triggers a new
+				-- conversion that will take many clk_dft cycles
+				-- and be gracefully aborted when soc drops in
+				-- S_PUSH -- either way dout is stable for the
+				-- capture.
+				soc        <= '1';
 				capture    <= '1';
 				next_state <= S_PUSH;
 
