@@ -161,7 +161,12 @@ begin
 		end if;
 	end process;
 
+	-- In normal mode write dout directly: dout is stable in S_PUSH (one
+	-- clk_dft cycle after eoc, giving the ADC time to settle the output
+	-- bus).  Using sample_reg instead produced a one-sample lag where the
+	-- very first FIFO entry was always 0x000 (sample_reg reset value),
+	-- causing the display to read "0000" on the first pop.
 	fifo_wdata <= std_logic_vector(dbg_count) when debug_counter_mode
-	              else sample_reg;
+	              else std_logic_vector(to_unsigned(dout, data_width));
 
 end architecture rtl;

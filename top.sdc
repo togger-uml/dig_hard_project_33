@@ -25,11 +25,12 @@ create_clock -period 20.000 -name clk_50 [get_ports MAX10_CLK1_50]
 # ---------------------------------------------------------------- #
 
 # derive_pll_clocks already creates the auto-named generated clock
-# for the PLL output (10 MHz feeding the ADC).  Defining a second
-# create_generated_clock on the same target pin produced Quartus
-# warning 332049 ("clock already defined") and silently dropped our
-# constraint, so we rely on the auto-generated clock instead.
-derive_pll_clocks -create_base_clocks
+# for the PLL output (10 MHz feeding the ADC).  Do NOT pass
+# -create_base_clocks: we already created clk_50 manually above,
+# and passing -create_base_clocks would place a second clock on the
+# same MAX10_CLK1_50 node, giving TimeQuest two overlapping clocks
+# and producing spurious slack violations.
+derive_pll_clocks
 derive_clock_uncertainty
 
 # 1 MHz producer clock generated inside the MAX10 ADC block by the
@@ -64,8 +65,16 @@ set_clock_groups -asynchronous \
 # I/O timing (loose constraints; outputs only drive on-board LEDs) #
 # ---------------------------------------------------------------- #
 
-# Reset/key inputs are asynchronous to all clocks.
-set_false_path -from [get_ports {KEY[*]}] -to [all_clocks]
+# Reset/key inputs are asynchronous to all clocks; they enter only
+# through synchronisers so no setup/hold or recovery/removal path
+# needs to be analysed.  The previous constraint used
+#   -to [all_clocks]
+# which targets *clock-network nodes*, not the register D/reset pins
+# downstream of the KEY ports, making it a near-no-op.  Dropping the
+# -to clause cuts every path that originates at KEY ports, which is
+# the correct way to suppress the recovery-time violations that were
+# causing "Critical Warning 332148: Timing requirements not met".
+set_false_path -from [get_ports {KEY[*]}]
 
 # Seven-segment outputs are visually observed; relax timing.
 set_false_path -from [all_clocks] -to [get_ports {HEX0[*] HEX1[*] HEX2[*] HEX3[*] HEX4[*] HEX5[*]}]
