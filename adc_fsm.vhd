@@ -16,11 +16,17 @@
 --
 -- States:
 --   IDLE      -- wait one cycle, then request a new conversion
---   CONVERT   -- assert soc and hold it high until eoc rises;
---                latch the result on the eoc edge.  The MAX 10 ADC
---                requires soc to be held high for the duration of
---                the conversion -- a one-cycle pulse causes the
---                conversion to abort and eoc never fires.
+--   CONVERT   -- assert soc and hold it high until eoc rises.  The
+--                MAX 10 ADC requires soc to be held high for the
+--                duration of the conversion -- a one-cycle pulse
+--                causes the conversion to abort and eoc never fires.
+--   LATCH     -- one-cycle delay so dout settles.  The ADC clears
+--                eoc and updates dout on the same rising edge that
+--                we sample eoc='1' on, so registering dout on that
+--                edge would race with the ADC's internal output flop
+--                and capture the previous (stale) result.  Waiting
+--                one full clk_dft cycle before sampling guarantees
+--                dout is the new conversion's value.
 --   PUSH      -- if FIFO has room, write the captured sample; if not,
 --                drop the sample (overflow) and return to IDLE so the
 --                producer never stalls
@@ -52,7 +58,7 @@ entity adc_fsm is
 end entity adc_fsm;
 
 architecture rtl of adc_fsm is
-	type state_t is (S_IDLE, S_CONVERT, S_PUSH);
+	type state_t is (S_IDLE, S_CONVERT, S_LATCH, S_PUSH);
 	signal state, next_state: state_t;
 
 	signal sample_reg: std_logic_vector(data_width - 1 downto 0);
@@ -63,11 +69,14 @@ architecture rtl of adc_fsm is
 	-- chain (FIFO -> bin_to_bcd -> 7-seg) is healthy.
 	-- Step 2 (real eoc, single-cycle soc pulse) showed the display
 	-- frozen at 0000 -> conversions never completed.  Root cause:
-	-- the MAX 10 ADC needs soc held high until eoc rises; a one-
-	-- cycle soc pulse aborts the conversion.  This build holds soc
-	-- across S_CONVERT, so dbg_count now ticks once per real eoc:
-	--   * ticking  -> eoc is live, bug (if any) is in dout
-	--   * frozen   -> still no eoc, problem is elsewhere
+	-- the MAX 10 ADC needs soc held high until eoc rises.  Fix:
+	-- hold soc across S_CONVERT.  Counter then ticked correctly.
+	-- Step 3 (real eoc, soc held, but display still 0000 with
+	-- debug_counter_mode=false) -> dout sampling raced the ADC's
+	-- output update on the eoc-clear edge.  Fix: insert S_LATCH so
+	-- dout is registered one clk_dft cycle later (matching the
+	-- working ReninJose/ADS Project4 reference, which also waits
+	-- two state edges after eoc detection before writing the RAM).
 	-- Set this constant back to false to restore normal ADC operation.
 	constant debug_counter_mode: boolean := true;
 	signal dbg_count: unsigned(data_width - 1 downto 0);
@@ -101,10 +110,17 @@ begin
 				-- is deasserted before eoc rises
 				soc <= '1';
 				if eoc_eff = '1' then
-					-- latch the conversion result on this edge
-					capture    <= '1';
-					next_state <= S_PUSH;
+					-- do NOT capture here: dout is being updated
+					-- by the ADC on this same rising edge, so it
+					-- has not yet settled.  Move to S_LATCH and
+					-- sample one cycle later.
+					next_state <= S_LATCH;
 				end if;
+
+			when S_LATCH =>
+				-- dout is now stable; register it
+				capture    <= '1';
+				next_state <= S_PUSH;
 
 			when S_PUSH =>
 				if fifo_full = '0' then
