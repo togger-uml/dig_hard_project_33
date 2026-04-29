@@ -40,9 +40,9 @@ architecture rtl of top is
 
 	component pll is
 		port (
-			refclk:	in	std_logic;
-			rst:	in	std_logic;
-			outclk:	out	std_logic;
+			areset:	in	std_logic := '0';
+			inclk0:	in	std_logic := '0';
+			c0:		out	std_logic;
 			locked:	out	std_logic
 		);
 	end component pll;
@@ -158,9 +158,9 @@ begin
 
 	pll_inst: pll
 		port map (
-			refclk => clk_50,
-			rst    => not KEY(0),
-			outclk => clk_10,
+			inclk0 => clk_50,
+			areset => not KEY(0),
+			c0     => clk_10,
 			locked => pll_locked
 		);
 
