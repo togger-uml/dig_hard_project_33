@@ -34,12 +34,15 @@ derive_pll_clocks
 derive_clock_uncertainty
 
 # 1 MHz producer clock generated inside the MAX10 ADC block by the
-# divide-by-10 prescaler (clkdiv = 2).  The ADC primitive output
-# clk_dft is registered by the MAX10 fabric.
-create_generated_clock -name clk_prod \
-    -source [get_pins {adc_inst|primitive_instance|clkin_from_pll_c0}] \
-    -divide_by 10 -multiply_by 1 \
-    [get_pins {adc_inst|primitive_instance|clk_dft}]
+# divide-by-10 prescaler (clkdiv = 2).  The clk_dft net in the
+# top-level connects to the ADC's divided clock output and drives
+# the producer-domain registers (adc_fsm, FIFO write pointers).
+# Using create_clock on the net is more reliable than
+# create_generated_clock on a hard-IP primitive output pin; the
+# latter can silently fail if the pin target path does not match
+# Quartus's internal naming, leaving the clock unconstrained and
+# triggering Critical Warning 332148.
+create_clock -period 1000.0 -name clk_prod [get_nets {clk_prod}]
 
 # ---------------------------------------------------------------- #
 # Clock-domain-crossing exceptions                                 #
@@ -67,14 +70,15 @@ set_clock_groups -asynchronous \
 
 # Reset/key inputs are asynchronous to all clocks; they enter only
 # through synchronisers so no setup/hold or recovery/removal path
-# needs to be analysed.  The previous constraint used
-#   -to [all_clocks]
-# which targets *clock-network nodes*, not the register D/reset pins
-# downstream of the KEY ports, making it a near-no-op.  Dropping the
-# -to clause cuts every path that originates at KEY ports, which is
-# the correct way to suppress the recovery-time violations that were
-# causing "Critical Warning 332148: Timing requirements not met".
+# needs to be analysed.
 set_false_path -from [get_ports {KEY[*]}]
+
+# The PLL locked signal feeds the asynchronous reset network.  Its
+# assertion and deassertion are intentionally asynchronous (they
+# only occur during PLL lock acquisition, long before meaningful
+# clocks are stable), so recovery/removal analysis on the downstream
+# flip-flop async-reset pins is not meaningful.
+set_false_path -from [get_pins {pll_inst|altpll_component|auto_generated|pll1|locked}]
 
 # Seven-segment outputs are visually observed; relax timing.
 set_false_path -from [all_clocks] -to [get_ports {HEX0[*] HEX1[*] HEX2[*] HEX3[*] HEX4[*] HEX5[*]}]

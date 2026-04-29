@@ -6,7 +6,7 @@
 --
 --   1. asserts start-of-conversion to the ADC,
 --   2. holds soc high until the end-of-conversion strobe rises,
---   3. captures the 12-bit result on the eoc edge,
+--   3. captures the 12-bit result one cycle after the eoc edge,
 --   4. pushes that result into the asynchronous FIFO so it can cross
 --      into the consumer (50 MHz) clock domain that drives the
 --      seven-segment displays.
@@ -20,13 +20,15 @@
 --                MAX 10 ADC requires soc to be held high for the
 --                duration of the conversion -- a one-cycle pulse
 --                causes the conversion to abort and eoc never fires.
---                On the eoc edge, increment the diagnostic counter
---                so dbg_count tallies one tick per real conversion.
---   PUSH      -- one cycle after eoc detection.  Capture dout into
---                sample_reg here (giving dout one extra clk_dft
---                cycle to settle past the eoc-clearing edge), and
---                if the FIFO has room, write the sample.  Whether
---                or not the write happens, return to IDLE.
+--                On the eoc edge, transition to SAMPLE.
+--   SAMPLE    -- one cycle after eoc.  dout has now settled past the
+--                eoc-clearing edge.  Capture dout into sample_reg.
+--                The diagnostic counter increments here so dbg_count
+--                tallies one tick per real conversion.  Transition to
+--                PUSH.
+--   PUSH      -- one cycle after SAMPLE.  sample_reg holds a stable
+--                copy of dout.  If the FIFO has room, write it.
+--                Whether or not the write happens, return to IDLE.
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -55,12 +57,12 @@ entity adc_fsm is
 end entity adc_fsm;
 
 architecture rtl of adc_fsm is
-	type state_t is (S_IDLE, S_CONVERT, S_PUSH);
+	type state_t is (S_IDLE, S_CONVERT, S_SAMPLE, S_PUSH);
 	signal state, next_state: state_t;
 
 	signal sample_reg: std_logic_vector(data_width - 1 downto 0);
-	signal eoc_seen:   std_logic;        -- '1' for the cycle eoc was first detected (S_CONVERT->S_PUSH transition)
-	signal capture:    std_logic;        -- '1' in S_PUSH, one cycle after eoc -> dout is settled, latch it
+	signal eoc_seen:   std_logic;        -- '1' for the cycle eoc was first detected (S_CONVERT->S_SAMPLE transition)
+	signal capture:    std_logic;        -- '1' in S_SAMPLE: latch dout (now settled) into sample_reg
 
 	-- DEBUG: diagnostic counter used to bisect the producer-side path.
 	-- Step 1 (free-running counter, eoc bypassed) showed the consumer
@@ -71,13 +73,14 @@ architecture rtl of adc_fsm is
 	-- hold soc across S_CONVERT.  Counter then ticked correctly
 	-- (HEX3 cycles 0..3 as the 12-bit dbg_count wraps).
 	-- Step 3: with debug_counter_mode=false the display read 0000.
-	-- The 3-state FSM captured dout on the same edge the ADC
-	-- updates dout, so sample_reg got the previous (initially zero)
-	-- value.  Fix: keep the same 3-state FSM (so dbg_count still
-	-- ticks once per eoc), but defer the dout capture by one clk_dft
-	-- cycle by latching dout in S_PUSH instead of S_CONVERT.  This
-	-- mirrors the working ReninJose/ADS Project4 reference, which
-	-- registers the result two state edges after eoc detection.
+	-- Root cause: dout is updated by the ADC on the same rising edge
+	-- that eoc asserts, so capturing it then gives the previous
+	-- (initially zero) value.  Fix: add a dedicated S_SAMPLE state
+	-- so dout is registered into sample_reg one clk_dft cycle after
+	-- eoc, giving the ADC bus time to settle.  S_PUSH then writes
+	-- the stable sample_reg to the FIFO.  This eliminates the
+	-- one-sample lag of the earlier two-state approach and ensures
+	-- sample_reg is always valid when the FIFO write occurs.
 	-- Step 4: with the display_unit pop-timing bug fixed (it was
 	-- latching mem[rbin+1] instead of mem[rbin]), normal ADC
 	-- operation works again, so debug_counter_mode is set back to
@@ -92,17 +95,12 @@ begin
 
 	-- next-state and output decoding
 	process (state, eoc, fifo_full) is
-		variable eoc_eff: std_logic;
 	begin
 		next_state <= state;
 		soc        <= '0';
 		fifo_winc  <= '0';
 		eoc_seen   <= '0';
 		capture    <= '0';
-
-		-- use the real eoc; debug mode now only changes what data
-		-- gets written into the FIFO and how dbg_count is updated
-		eoc_eff := eoc;
 
 		case state is
 			when S_IDLE =>
@@ -114,32 +112,34 @@ begin
 				-- internal clock and aborts the conversion if soc
 				-- is deasserted before eoc rises
 				soc <= '1';
-				if eoc_eff = '1' then
-					-- mark the conversion as complete this cycle
-					-- (used to tick dbg_count once per real eoc).
-					-- Do NOT capture dout here: dout is being
-					-- updated by the ADC on this same rising edge,
-					-- so it has not yet settled.  Capture in
-					-- S_PUSH (next cycle) instead.
+				if eoc = '1' then
+					-- mark the conversion complete (used to tick
+					-- dbg_count once per real eoc).  Do NOT capture
+					-- dout here: the ADC is updating dout on this
+					-- same rising edge.  Wait until S_SAMPLE instead.
 					eoc_seen   <= '1';
-					next_state <= S_PUSH;
+					next_state <= S_SAMPLE;
 				end if;
 
-			when S_PUSH =>
+			when S_SAMPLE =>
 				-- one cycle after eoc -> dout is now stable.
-				-- Latch it into sample_reg.
-				capture <= '1';
+				-- Latch it into sample_reg so S_PUSH can forward
+				-- a registered (glitch-free) value to the FIFO.
+				capture    <= '1';
+				next_state <= S_PUSH;
+
+			when S_PUSH =>
+				-- sample_reg now holds the settled conversion result.
+				-- Write it to the FIFO if there is room, then return
+				-- to IDLE and start the next conversion.
 				if fifo_full = '0' then
 					fifo_winc <= '1';
 				end if;
-				-- whether or not the FIFO accepted the sample, return
-				-- to IDLE: the consumer is faster than us so under
-				-- normal operation the FIFO will not be full.
 				next_state <= S_IDLE;
 		end case;
 	end process;
 
-	-- state register and sample capture register
+	-- state register, sample capture register, and diagnostic counter
 	process (clk, rst_n) is
 	begin
 		if rst_n = '0' then
@@ -161,12 +161,11 @@ begin
 		end if;
 	end process;
 
-	-- In normal mode write dout directly: dout is stable in S_PUSH (one
-	-- clk_dft cycle after eoc, giving the ADC time to settle the output
-	-- bus).  Using sample_reg instead produced a one-sample lag where the
-	-- very first FIFO entry was always 0x000 (sample_reg reset value),
-	-- causing the display to read "0000" on the first pop.
+	-- In normal mode, write sample_reg: it was captured in S_SAMPLE
+	-- (one clk_dft cycle after eoc), so the ADC output bus is fully
+	-- settled.  The FIFO write in S_PUSH therefore always carries a
+	-- valid, registered sample -- including the very first conversion.
 	fifo_wdata <= std_logic_vector(dbg_count) when debug_counter_mode
-	              else std_logic_vector(to_unsigned(dout, data_width));
+	              else sample_reg;
 
 end architecture rtl;
