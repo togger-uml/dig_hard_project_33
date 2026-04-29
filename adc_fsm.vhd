@@ -54,6 +54,19 @@ architecture rtl of adc_fsm is
 
 	signal sample_reg: std_logic_vector(data_width - 1 downto 0);
 	signal capture:    std_logic;
+
+	-- DEBUG: diagnostic counter used to validate the consumer-side path
+	-- (FIFO -> binary-to-BCD -> 7-segment). When debug_counter_mode is
+	-- true the FIFO is fed from a slow-incrementing 12-bit counter
+	-- instead of the ADC sample, and the FSM bypasses the eoc handshake
+	-- so the test does not depend on the ADC primitive working.
+	-- Set this constant back to false to restore normal ADC operation.
+	constant debug_counter_mode: boolean := true;
+	-- prescaler width: with clk_prod ~1 MHz, 2**18 cycles ~= 0.26 s
+	-- per increment, slow enough to read on the display
+	constant dbg_presc_bits: positive := 18;
+	signal dbg_count: unsigned(data_width - 1 downto 0);
+	signal dbg_presc: unsigned(dbg_presc_bits - 1 downto 0);
 begin
 
 	-- channel 0, temperature sensing mode are static for this design
@@ -62,11 +75,20 @@ begin
 
 	-- next-state and output decoding
 	process (state, eoc, fifo_full) is
+		variable eoc_eff: std_logic;
 	begin
 		next_state <= state;
 		soc        <= '0';
 		fifo_winc  <= '0';
 		capture    <= '0';
+
+		-- in debug mode bypass the ADC handshake so the consumer
+		-- path can be exercised even if eoc never asserts
+		if debug_counter_mode then
+			eoc_eff := '1';
+		else
+			eoc_eff := eoc;
+		end if;
 
 		case state is
 			when S_IDLE =>
@@ -78,7 +100,7 @@ begin
 				next_state <= S_WAIT_EOC;
 
 			when S_WAIT_EOC =>
-				if eoc = '1' then
+				if eoc_eff = '1' then
 					-- latch the conversion result on this edge
 					capture    <= '1';
 					next_state <= S_PUSH;
@@ -101,15 +123,25 @@ begin
 		if rst_n = '0' then
 			state      <= S_IDLE;
 			sample_reg <= (others => '0');
+			dbg_count  <= (others => '0');
+			dbg_presc  <= (others => '0');
 		elsif rising_edge(clk) then
 			state <= next_state;
 			if capture = '1' then
 				sample_reg <= std_logic_vector(
 					to_unsigned(dout, data_width));
 			end if;
+			-- slow free-running prescaler; when it wraps, bump the
+			-- diagnostic counter so the display advances at a
+			-- human-readable rate
+			dbg_presc <= dbg_presc + 1;
+			if dbg_presc = to_unsigned(2**dbg_presc_bits - 1, dbg_presc_bits) then
+				dbg_count <= dbg_count + 1;
+			end if;
 		end if;
 	end process;
 
-	fifo_wdata <= sample_reg;
+	fifo_wdata <= std_logic_vector(dbg_count) when debug_counter_mode
+	              else sample_reg;
 
 end architecture rtl;
