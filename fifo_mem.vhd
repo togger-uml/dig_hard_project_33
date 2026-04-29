@@ -35,6 +35,18 @@ architecture rtl of fifo_mem is
 	-- never reads a location before it has been written -- wptr_full /
 	-- rptr_empty enforce that -- so leaving mem uninitialized is safe.
 	signal mem: mem_t;
+
+	-- Force the memory into MLAB (LUT-based distributed RAM) so the
+	-- read port is truly combinational, as the rest of the design
+	-- assumes.  Without this attribute Quartus infers an M9K block,
+	-- whose dual-clock mode mandates a registered read port: that
+	-- silent extra register turned the consumer-side "rdata = mem[rbin]"
+	-- assumption in display_unit/rptr_empty into "rdata = mem[rbin] one
+	-- cycle ago", and combined with unconstrained timing on the read
+	-- path produced the stuck-at-0000 symptom.  16x12 trivially fits
+	-- in MLAB.
+	attribute ramstyle: string;
+	attribute ramstyle of mem: signal is "MLAB";
 begin
 
 	-- write port: synchronous on wclk

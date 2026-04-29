@@ -20,24 +20,17 @@
 # main 50 MHz board clock (period in ns)
 create_clock -period 20.000 -name clk_50 [get_ports MAX10_CLK1_50]
 
-# virtual clocks for I/O analysis
-create_clock -period 20.000 -name main_clock_virt
-create_clock -period 100.000 -name adc_clock_virt
-
 # ---------------------------------------------------------------- #
 # PLL-derived clocks                                               #
 # ---------------------------------------------------------------- #
 
+# derive_pll_clocks already creates the auto-named generated clock
+# for the PLL output (10 MHz feeding the ADC).  Defining a second
+# create_generated_clock on the same target pin produced Quartus
+# warning 332049 ("clock already defined") and silently dropped our
+# constraint, so we rely on the auto-generated clock instead.
 derive_pll_clocks -create_base_clocks
 derive_clock_uncertainty
-
-# 10 MHz PLL output feeding the ADC.  The exact node name produced
-# by Quartus depends on the altpll instance hierarchy; if your fitter
-# reports a different name update the get_pins target accordingly.
-create_generated_clock -name clk_10 \
-    -source [get_pins {pll_inst|altpll_component|auto_generated|pll1|inclk[0]}] \
-    -divide_by 5 -multiply_by 1 \
-    [get_pins {pll_inst|altpll_component|auto_generated|pll1|clk[0]}]
 
 # 1 MHz producer clock generated inside the MAX10 ADC block by the
 # divide-by-10 prescaler (clkdiv = 2).  The ADC primitive output
@@ -54,10 +47,14 @@ create_generated_clock -name clk_prod \
 # The two-flop pointer synchronizers and the dual-clock FIFO memory
 # implement a metastability-tolerant CDC, so static timing analysis
 # does not need to verify the path between the producer and consumer
-# clock domains.  Cut all paths in both directions.
+# clock domains.  Cut all paths in both directions.  The auto-named
+# PLL output clock is a base clock for clk_prod, so listing clk_prod
+# alone suffices via -include_generated_clocks semantics in the
+# producer group; we explicitly include any clock derived from the
+# PLL hierarchy to be safe.
 set_clock_groups -asynchronous \
-    -group {clk_50 main_clock_virt} \
-    -group {clk_prod adc_clock_virt clk_10}
+    -group [get_clocks clk_50] \
+    -group [get_clocks {clk_prod pll_inst|*}]
 
 # ---------------------------------------------------------------- #
 # I/O timing (loose constraints; outputs only drive on-board LEDs) #
