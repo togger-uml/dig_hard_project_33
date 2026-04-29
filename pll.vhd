@@ -41,7 +41,7 @@ begin
 			compensate_clock		=> "CLK0",
 			inclk0_input_frequency	=> 20000,	-- 50 MHz period in ps
 			intended_device_family	=> "MAX 10",
-			lpm_hint				=> "CBX_MODULE_PREFIX=pll",
+			lpm_hint				=> "CBX_MODULE_PREFIX=pll_altpll",
 			lpm_type				=> "altpll",
 			operation_mode			=> "NORMAL",
 			pll_type				=> "AUTO",
