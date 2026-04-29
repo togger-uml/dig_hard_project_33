@@ -95,9 +95,18 @@ begin
 			pwd			=> 0,
 			prescalar	=> 0,
 			refsel		=> 0,
+			-- testbits and analog_input_pin_mask must match the
+			-- values produced by the Quartus Modular ADC IP wizard
+			-- for the analog front-end to come out of reset and
+			-- start asserting eoc.  testbits=66 is the magic
+			-- calibration/test setting used by Intel's IP and
+			-- analog_input_pin_mask=63 enables channels 0..5
+			-- (bit n -> ADC1IN<n>).  With these at 0 (the previous
+			-- values) no channel is configured and eoc stays low.
+			testbits	=> 66,
 			device_partname_fivechar_prefix	=> "10M50",
 			is_this_first_or_second_adc		=> 1,
-			analog_input_pin_mask			=> 0,
+			analog_input_pin_mask			=> 63,
 			enable_usr_sim	=> 0,
 			reference_voltage_sim	=> 0--,
 --			simfilename_ch0		=> "",
