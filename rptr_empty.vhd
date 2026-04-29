@@ -29,10 +29,19 @@ architecture rtl of rptr_empty is
 	signal rbin, rbin_next:		unsigned(addr_width downto 0);
 	signal rgray, rgray_next:	std_logic_vector(addr_width downto 0);
 	signal rempty_val:			std_logic;
+	signal rempty_reg:			std_logic;
 begin
 
-	-- next-state binary read pointer
-	rbin_next <= rbin + 1 when (rinc = '1') and (rempty_val = '0') else rbin;
+	-- next-state binary read pointer.  Gate the increment on the
+	-- *registered* empty flag, not the combinational rempty_val: gating
+	-- on rempty_val creates a combinational loop
+	-- (rbin_next -> rgray_next -> rempty_val -> rbin_next) that Quartus
+	-- flagged with warning 332125 and which synthesises to unreliable
+	-- hardware.  Using the registered signal matches the Cummings
+	-- async-FIFO reference and is functionally correct because
+	-- rempty_reg already reflects the post-flop empty status the
+	-- consumer must observe before issuing a read.
+	rbin_next <= rbin + 1 when (rinc = '1') and (rempty_reg = '0') else rbin;
 
 	-- binary-to-Gray on the next-state pointer
 	rgray_next(addr_width) <= rbin_next(addr_width);
@@ -60,13 +69,14 @@ begin
 	process (rclk, rrst_n) is
 	begin
 		if rrst_n = '0' then
-			rempty <= '1';
+			rempty_reg <= '1';
 		elsif rising_edge(rclk) then
-			rempty <= rempty_val;
+			rempty_reg <= rempty_val;
 		end if;
 	end process;
 
-	raddr <= std_logic_vector(rbin(addr_width - 1 downto 0));
-	rptr  <= rgray;
+	raddr  <= std_logic_vector(rbin(addr_width - 1 downto 0));
+	rptr   <= rgray;
+	rempty <= rempty_reg;
 
 end architecture rtl;
