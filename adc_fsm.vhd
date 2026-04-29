@@ -78,8 +78,11 @@ architecture rtl of adc_fsm is
 	-- cycle by latching dout in S_PUSH instead of S_CONVERT.  This
 	-- mirrors the working ReninJose/ADS Project4 reference, which
 	-- registers the result two state edges after eoc detection.
-	-- Set this constant back to false to restore normal ADC operation.
-	constant debug_counter_mode: boolean := true;
+	-- Step 4: with the display_unit pop-timing bug fixed (it was
+	-- latching mem[rbin+1] instead of mem[rbin]), normal ADC
+	-- operation works again, so debug_counter_mode is set back to
+	-- false.  Flip to true to re-enable the diagnostic counter.
+	constant debug_counter_mode: boolean := false;
 	signal dbg_count: unsigned(data_width - 1 downto 0);
 begin
 

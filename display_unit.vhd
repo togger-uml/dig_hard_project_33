@@ -5,11 +5,16 @@
 -- DE10-Lite seven-segment displays as a four-digit decimal value.
 --
 -- A simple two-state FSM is used: when the FIFO is not empty, the
--- consumer asserts rinc for one cycle (the FIFO output is stable on
--- the next clock edge) and then registers the popped sample into a
--- holding register that drives the binary-to-BCD converter and the
--- seven-segment decoders.  HEX0..HEX3 show the decimal value,
--- HEX4..HEX5 are blanked.
+-- consumer asserts rinc for one cycle and -- in that *same* cycle --
+-- latches fifo_rdata into the holding register.  This works because
+-- the async FIFO's read port is combinational (rdata = mem[rbin]),
+-- so the data being popped is already on the bus at the time rinc
+-- is asserted; rbin only advances on the following rising edge.
+-- The FSM then spends one cycle in S_POP waiting for the registered
+-- rempty flag inside rptr_empty to settle to its new value before
+-- considering the next pop, so we never assert rinc twice for the
+-- same FIFO entry.  HEX0..HEX3 show the decimal value, HEX4..HEX5
+-- are blanked.
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -76,12 +81,22 @@ begin
 		case state is
 			when S_WAIT =>
 				if fifo_empty = '0' then
+					-- The async FIFO's read port is combinational:
+					-- fifo_rdata is mem[rbin] *right now*.  Latch it
+					-- this cycle, in the same cycle we tell the FIFO
+					-- to advance.  Latching in S_POP (the previous
+					-- design) read mem[rbin+1] instead -- a never-
+					-- written cell -- which is why the display was
+					-- stuck at 0000 with a slow producer.
 					fifo_rinc  <= '1';
+					load       <= '1';
 					next_state <= S_POP;
 				end if;
 			when S_POP =>
-				-- fifo_rdata is now stable; latch it and go back to wait
-				load       <= '1';
+				-- one-cycle pause so the registered rempty flag in
+				-- rptr_empty has time to settle to its new value;
+				-- this prevents popping the same entry twice when
+				-- the FIFO had only a single entry queued.
 				next_state <= S_WAIT;
 		end case;
 	end process;
