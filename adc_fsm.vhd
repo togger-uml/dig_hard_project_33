@@ -4,9 +4,9 @@
 -- the MAX10 ADC, ~1 MHz with the divide-by-10 prescaler in
 -- max10_adc.vhd).  It repeatedly:
 --
---   1. issues a start-of-conversion pulse to the ADC,
---   2. waits for the end-of-conversion strobe,
---   3. captures the 12-bit result,
+--   1. asserts start-of-conversion to the ADC,
+--   2. holds soc high until the end-of-conversion strobe rises,
+--   3. captures the 12-bit result on the eoc edge,
 --   4. pushes that result into the asynchronous FIFO so it can cross
 --      into the consumer (50 MHz) clock domain that drives the
 --      seven-segment displays.
@@ -16,8 +16,11 @@
 --
 -- States:
 --   IDLE      -- wait one cycle, then request a new conversion
---   START     -- assert soc for one clock to launch the conversion
---   WAIT_EOC  -- hold soc low and wait for eoc to assert
+--   CONVERT   -- assert soc and hold it high until eoc rises;
+--                latch the result on the eoc edge.  The MAX 10 ADC
+--                requires soc to be held high for the duration of
+--                the conversion -- a one-cycle pulse causes the
+--                conversion to abort and eoc never fires.
 --   PUSH      -- if FIFO has room, write the captured sample; if not,
 --                drop the sample (overflow) and return to IDLE so the
 --                producer never stalls
@@ -49,7 +52,7 @@ entity adc_fsm is
 end entity adc_fsm;
 
 architecture rtl of adc_fsm is
-	type state_t is (S_IDLE, S_START, S_WAIT_EOC, S_PUSH);
+	type state_t is (S_IDLE, S_CONVERT, S_PUSH);
 	signal state, next_state: state_t;
 
 	signal sample_reg: std_logic_vector(data_width - 1 downto 0);
@@ -58,11 +61,13 @@ architecture rtl of adc_fsm is
 	-- DEBUG: diagnostic counter used to bisect the producer-side path.
 	-- Step 1 (free-running counter, eoc bypassed) showed the consumer
 	-- chain (FIFO -> bin_to_bcd -> 7-seg) is healthy.
-	-- Step 2 (this build): keep debug mode but use the real eoc and
-	-- increment dbg_count only on real captures. The display now shows
-	-- the number of eoc pulses observed:
-	--   * ticking  -> eoc is live, bug is in dout
-	--   * frozen   -> FSM stuck in WAIT_EOC, eoc never asserts
+	-- Step 2 (real eoc, single-cycle soc pulse) showed the display
+	-- frozen at 0000 -> conversions never completed.  Root cause:
+	-- the MAX 10 ADC needs soc held high until eoc rises; a one-
+	-- cycle soc pulse aborts the conversion.  This build holds soc
+	-- across S_CONVERT, so dbg_count now ticks once per real eoc:
+	--   * ticking  -> eoc is live, bug (if any) is in dout
+	--   * frozen   -> still no eoc, problem is elsewhere
 	-- Set this constant back to false to restore normal ADC operation.
 	constant debug_counter_mode: boolean := true;
 	signal dbg_count: unsigned(data_width - 1 downto 0);
@@ -87,14 +92,14 @@ begin
 
 		case state is
 			when S_IDLE =>
-				next_state <= S_START;
+				next_state <= S_CONVERT;
 
-			when S_START =>
-				-- one-cycle pulse on soc
-				soc        <= '1';
-				next_state <= S_WAIT_EOC;
-
-			when S_WAIT_EOC =>
+			when S_CONVERT =>
+				-- hold soc high for the full duration of the
+				-- conversion; the MAX 10 ADC samples soc on each
+				-- internal clock and aborts the conversion if soc
+				-- is deasserted before eoc rises
+				soc <= '1';
 				if eoc_eff = '1' then
 					-- latch the conversion result on this edge
 					capture    <= '1';
