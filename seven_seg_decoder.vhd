@@ -2,8 +2,14 @@
 --
 -- The DE10-Lite drives its seven-segment displays in a common-anode
 -- configuration: the FPGA pulls the cathode of each segment low to
--- light it.  Hence the encoding here is active-low.  Bit ordering is
--- (a,b,c,d,e,f,g) in seg(6 downto 0); seg(6) is segment 'a'.
+-- light it.  Hence the encoding here is active-low.  Bit ordering on
+-- the HEXn ports follows the DE10-Lite pin assignment: HEXn(0) drives
+-- segment 'a', HEXn(1) drives 'b', ..., HEXn(6) drives 'g'.
+--
+-- Internally the patterns below are written with the more readable
+-- "(a,b,c,d,e,f,g)" left-to-right ordering (so seg_active_high(6)
+-- corresponds to segment 'a'); the final output assignment reverses
+-- the bit order to match the physical pin map.
 --
 -- Although the project description mentions "logic high turns on the
 -- LED", the DE10-Lite hardware is wired such that the segment pin is
@@ -47,7 +53,11 @@ begin
 		"0000000" when others;
 
 	-- invert for the active-low common-anode displays; force all
-	-- segments off (= '1') when blanked
-	seg <= (others => '1') when blank = '1' else not seg_active_high;
+	-- segments off (= '1') when blanked.  Reverse the bit order so
+	-- seg(0) drives segment 'a' (matching the DE10-Lite HEXn pinout)
+	-- while the patterns above remain readable as (a,b,c,d,e,f,g).
+	gen_seg: for i in 0 to 6 generate
+		seg(i) <= '1' when blank = '1' else not seg_active_high(6 - i);
+	end generate;
 
 end architecture rtl;
