@@ -3,7 +3,6 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 library fiftyfivenm;
-use fiftyfivenm.fiftyfivenm_components.all;
 ----
 -- port map:
 --
@@ -61,7 +60,7 @@ begin
 	-- reference_voltage_sim
 
 
-	primitive_instance: fiftyfivenm_adcblock
+	primitive_instance: entity fiftyfivenm.fiftyfivenm_adcblock
 		generic map (
 			clkdiv		=> 2,	-- first stage clock divider
 			tsclkdiv	=> 1,
