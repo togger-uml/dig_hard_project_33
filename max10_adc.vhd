@@ -2,7 +2,6 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
-library fiftyfivenm;
 ----
 -- port map:
 --
@@ -28,6 +27,34 @@ entity max10_adc is
 end entity max10_adc;
 
 architecture wrapper of max10_adc is
+	component fiftyfivenm_adcblock
+		generic (
+			clkdiv                          : integer := 1;
+			tsclkdiv                        : integer := 0;
+			tsclksel                        : integer := 0;
+			prescalar                       : integer := 0;
+			refsel                          : integer := 0;
+			pwd                             : integer := 0;
+			testbits                        : integer := 0;
+			device_partname_fivechar_prefix : string  := "10M08";
+			is_this_first_or_second_adc     : integer := 1;
+			analog_input_pin_mask           : integer := 0;
+			reserve_block                   : string  := "false";
+			enable_usr_sim                  : integer := 0;
+			reference_voltage_sim           : integer := 65536
+		);
+		port (
+			clkin_from_pll_c0 : in  std_logic := '0';
+			usr_pwd           : in  std_logic := '1';
+			tsen              : in  std_logic := '0';
+			chsel             : in  std_logic_vector(4 downto 0) := (others => '0');
+			soc               : in  std_logic := '0';
+			eoc               : out std_logic;
+			dout              : out std_logic_vector(11 downto 0);
+			clk_dft           : out std_logic
+		);
+	end component;
+
 	signal adc_dout: std_logic_vector(11 downto 0);
 	signal adc_chsel: std_logic_vector(4 downto 0);
 begin
@@ -60,7 +87,7 @@ begin
 	-- reference_voltage_sim
 
 
-	primitive_instance: entity fiftyfivenm.fiftyfivenm_adcblock
+	primitive_instance: fiftyfivenm_adcblock
 		generic map (
 			clkdiv		=> 2,	-- first stage clock divider
 			tsclkdiv	=> 1,
