@@ -20,16 +20,13 @@
 --                MAX 10 ADC requires soc to be held high for the
 --                duration of the conversion -- a one-cycle pulse
 --                causes the conversion to abort and eoc never fires.
---   LATCH     -- one-cycle delay so dout settles.  The ADC clears
---                eoc and updates dout on the same rising edge that
---                we sample eoc='1' on, so registering dout on that
---                edge would race with the ADC's internal output flop
---                and capture the previous (stale) result.  Waiting
---                one full clk_dft cycle before sampling guarantees
---                dout is the new conversion's value.
---   PUSH      -- if FIFO has room, write the captured sample; if not,
---                drop the sample (overflow) and return to IDLE so the
---                producer never stalls
+--                On the eoc edge, increment the diagnostic counter
+--                so dbg_count tallies one tick per real conversion.
+--   PUSH      -- one cycle after eoc detection.  Capture dout into
+--                sample_reg here (giving dout one extra clk_dft
+--                cycle to settle past the eoc-clearing edge), and
+--                if the FIFO has room, write the sample.  Whether
+--                or not the write happens, return to IDLE.
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -58,11 +55,12 @@ entity adc_fsm is
 end entity adc_fsm;
 
 architecture rtl of adc_fsm is
-	type state_t is (S_IDLE, S_CONVERT, S_LATCH, S_PUSH);
+	type state_t is (S_IDLE, S_CONVERT, S_PUSH);
 	signal state, next_state: state_t;
 
 	signal sample_reg: std_logic_vector(data_width - 1 downto 0);
-	signal capture:    std_logic;
+	signal eoc_seen:   std_logic;        -- '1' for the cycle eoc was first detected (S_CONVERT->S_PUSH transition)
+	signal capture:    std_logic;        -- '1' in S_PUSH, one cycle after eoc -> dout is settled, latch it
 
 	-- DEBUG: diagnostic counter used to bisect the producer-side path.
 	-- Step 1 (free-running counter, eoc bypassed) showed the consumer
@@ -70,13 +68,16 @@ architecture rtl of adc_fsm is
 	-- Step 2 (real eoc, single-cycle soc pulse) showed the display
 	-- frozen at 0000 -> conversions never completed.  Root cause:
 	-- the MAX 10 ADC needs soc held high until eoc rises.  Fix:
-	-- hold soc across S_CONVERT.  Counter then ticked correctly.
-	-- Step 3 (real eoc, soc held, but display still 0000 with
-	-- debug_counter_mode=false) -> dout sampling raced the ADC's
-	-- output update on the eoc-clear edge.  Fix: insert S_LATCH so
-	-- dout is registered one clk_dft cycle later (matching the
-	-- working ReninJose/ADS Project4 reference, which also waits
-	-- two state edges after eoc detection before writing the RAM).
+	-- hold soc across S_CONVERT.  Counter then ticked correctly
+	-- (HEX3 cycles 0..3 as the 12-bit dbg_count wraps).
+	-- Step 3: with debug_counter_mode=false the display read 0000.
+	-- The 3-state FSM captured dout on the same edge the ADC
+	-- updates dout, so sample_reg got the previous (initially zero)
+	-- value.  Fix: keep the same 3-state FSM (so dbg_count still
+	-- ticks once per eoc), but defer the dout capture by one clk_dft
+	-- cycle by latching dout in S_PUSH instead of S_CONVERT.  This
+	-- mirrors the working ReninJose/ADS Project4 reference, which
+	-- registers the result two state edges after eoc detection.
 	-- Set this constant back to false to restore normal ADC operation.
 	constant debug_counter_mode: boolean := true;
 	signal dbg_count: unsigned(data_width - 1 downto 0);
@@ -93,6 +94,7 @@ begin
 		next_state <= state;
 		soc        <= '0';
 		fifo_winc  <= '0';
+		eoc_seen   <= '0';
 		capture    <= '0';
 
 		-- use the real eoc; debug mode now only changes what data
@@ -110,19 +112,20 @@ begin
 				-- is deasserted before eoc rises
 				soc <= '1';
 				if eoc_eff = '1' then
-					-- do NOT capture here: dout is being updated
-					-- by the ADC on this same rising edge, so it
-					-- has not yet settled.  Move to S_LATCH and
-					-- sample one cycle later.
-					next_state <= S_LATCH;
+					-- mark the conversion as complete this cycle
+					-- (used to tick dbg_count once per real eoc).
+					-- Do NOT capture dout here: dout is being
+					-- updated by the ADC on this same rising edge,
+					-- so it has not yet settled.  Capture in
+					-- S_PUSH (next cycle) instead.
+					eoc_seen   <= '1';
+					next_state <= S_PUSH;
 				end if;
 
-			when S_LATCH =>
-				-- dout is now stable; register it
-				capture    <= '1';
-				next_state <= S_PUSH;
-
 			when S_PUSH =>
+				-- one cycle after eoc -> dout is now stable.
+				-- Latch it into sample_reg.
+				capture <= '1';
 				if fifo_full = '0' then
 					fifo_winc <= '1';
 				end if;
@@ -145,6 +148,8 @@ begin
 			if capture = '1' then
 				sample_reg <= std_logic_vector(
 					to_unsigned(dout, data_width));
+			end if;
+			if eoc_seen = '1' then
 				-- bump the diagnostic counter once per real eoc
 				-- event so the display becomes a visible tally of
 				-- conversions completed
