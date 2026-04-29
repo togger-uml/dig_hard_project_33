@@ -49,13 +49,16 @@ create_generated_clock -name clk_prod \
 # does not need to verify the path between the producer and consumer
 # clock domains.  Cut all paths in both directions.
 #
-# The approach below puts clk_50 in its own group and everything else
-# (the auto-named PLL output clock, clk_prod, and any other generated
-# clocks) in a second group.  Using [get_clocks -filter {NAME != ...}]
-# avoids having to hard-code the PLL clock's synthesised name.
+# Group 1: consumer clock (clk_50 / 50 MHz).
+# Group 2: producer clocks -- the PLL 10 MHz output created by
+#   derive_pll_clocks (TimeQuest names it using the stripped hierarchy
+#   path: pll_inst|altpll_component|auto_generated|pll1|clk[0]) and
+#   the 1 MHz ADC clock clk_prod derived from it.
+#   Note: get_clocks -filter is NOT available in Quartus TimeQuest;
+#   the clocks are enumerated explicitly here.
 set_clock_groups -asynchronous \
     -group [get_clocks {clk_50}] \
-    -group [get_clocks -filter {NAME != "clk_50"}]
+    -group [get_clocks {clk_prod pll_inst|altpll_component|auto_generated|pll1|clk[0]}]
 
 # ---------------------------------------------------------------- #
 # I/O timing (loose constraints; outputs only drive on-board LEDs) #
