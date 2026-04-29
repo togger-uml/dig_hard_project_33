@@ -28,7 +28,13 @@ end entity fifo_mem;
 architecture rtl of fifo_mem is
 	type mem_t is array (0 to 2**addr_width - 1)
 		of std_logic_vector(data_width - 1 downto 0);
-	signal mem: mem_t := (others => (others => '0'));
+	-- No explicit initializer: an init value would cause Quartus to emit
+	-- memory-initialization data, which on MAX 10 requires the project's
+	-- internal configuration mode to be one of the "with Memory
+	-- Initialization" variants (else Assembler error 14703).  The FIFO
+	-- never reads a location before it has been written -- wptr_full /
+	-- rptr_empty enforce that -- so leaving mem uninitialized is safe.
+	signal mem: mem_t;
 begin
 
 	-- write port: synchronous on wclk
