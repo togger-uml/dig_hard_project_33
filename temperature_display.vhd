@@ -20,7 +20,8 @@ use ieee.numeric_std.all;
 -- 368-entry ROM (CODE_LO_C .. CODE_HI_C) below.  Each ROM slot holds
 -- the integer Celsius value of the temperature whose tabulated code is
 -- closest to the slot's code.  Codes outside the calibrated range are
--- clamped to −40 °C / +125 °C.
+-- flagged as invalid (see Out-of-range handling below) rather than
+-- clamped to the table endpoints.
 --
 -- The signed result is split into a sign bit and a magnitude that is
 -- then run through the double-dabble (shift-and-add-3) binary-to-BCD
@@ -34,6 +35,14 @@ use ieee.numeric_std.all;
 --   HEX2 – hundreds  BCD digit (typically blank)
 --   HEX1 – tens      BCD digit
 --   HEX0 – ones      BCD digit
+--
+-- Out-of-range handling:
+--   ADC codes outside the calibrated table range [CODE_LO_C..CODE_HI_C]
+--   are not physically plausible TSD outputs (e.g. the reset value 0
+--   before the first FIFO sample arrives, or a transient glitch).  In
+--   that case HEX3..HEX0 display dashes ('----') and HEX4 is blanked,
+--   so an invalid reading is visually distinct from a real ±endpoint
+--   temperature instead of being silently clamped to +125 °C / −40 °C.
 
 entity temperature_display is
 	port (
@@ -55,7 +64,8 @@ architecture rtl of temperature_display is
 	-- The TSD produces codes in the range 3431 (≈125 °C) to 3798 (−40 °C).
 	-- For each code in that span, CODE_TO_TEMP_C holds the integer °C
 	-- whose tabulated code is closest to the index value.  Codes outside
-	-- this range are clamped at the endpoints (see temp_convert below).
+	-- this range are flagged as invalid in temp_convert below (the HEX
+	-- ports then show '----' instead of a clamped endpoint value).
 	constant CODE_LO_C	: integer := 3431;   -- code at +125 °C (table min)
 	constant CODE_HI_C	: integer := 3798;   -- code at  −40 °C (table max)
 
@@ -112,11 +122,23 @@ architecture rtl of temperature_display is
 
 	signal temp_magnitude	: std_logic_vector(11 downto 0);
 	signal temp_negative	: std_logic;
+	signal temp_invalid	: std_logic;
 
 	signal bcd_ones		: std_logic_vector(3 downto 0);
 	signal bcd_tens		: std_logic_vector(3 downto 0);
 	signal bcd_hundreds	: std_logic_vector(3 downto 0);
 	signal bcd_thousands	: std_logic_vector(3 downto 0);
+
+	-- Decoded segment patterns (before invalid-reading masking)
+	signal seg_ones		: std_logic_vector(6 downto 0);
+	signal seg_tens		: std_logic_vector(6 downto 0);
+	signal seg_hundreds	: std_logic_vector(6 downto 0);
+	signal seg_thousands	: std_logic_vector(6 downto 0);
+
+	-- Segment pattern with only segment g on → '-' (dash)
+	constant SEG_DASH	: std_logic_vector(6 downto 0) := "0111111";
+	-- All segments off → blank
+	constant SEG_BLANK	: std_logic_vector(6 downto 0) := "1111111";
 
 	component seg7_decoder is
 		port (
@@ -133,7 +155,10 @@ begin
 	-- The result is split into a sign bit (temp_negative) and a 12-bit
 	-- unsigned magnitude (temp_magnitude) that feeds the BCD pipeline
 	-- below.  Codes outside the calibrated range [CODE_LO_C..CODE_HI_C]
-	-- are clamped to +125 °C / −40 °C respectively.
+	-- are flagged via temp_invalid; the BCD pipeline still runs on a
+	-- zero magnitude in that case but its outputs are masked to dashes
+	-- at the HEX ports so an invalid reading is not silently shown as
+	-- a clamped +125 °C / −40 °C value.
 	-- ----------------------------------------------------------------
 	temp_convert: process(value)
 		variable code_int	: integer range 0 to 4095;
@@ -142,22 +167,27 @@ begin
 	begin
 		code_int := to_integer(unsigned(value));
 
-		if code_int <= CODE_LO_C then
-			-- Codes at or below the table minimum → maximum temperature
-			t_signed := 125;
-		elsif code_int >= CODE_HI_C then
-			-- Codes at or above the table maximum → minimum temperature
-			t_signed := -40;
+		if code_int < CODE_LO_C or code_int > CODE_HI_C then
+			-- Outside the UG-M10ADC Table 4 calibrated range: flag as
+			-- invalid and feed a benign zero into the BCD pipeline.
+			temp_invalid  <= '1';
+			temp_negative <= '0';
+			t_signed      := 0;
 		else
-			t_signed := CODE_TO_TEMP_C(code_int);
+			temp_invalid <= '0';
+			t_signed     := CODE_TO_TEMP_C(code_int);
+
+			if t_signed < 0 then
+				temp_negative <= '1';
+			else
+				temp_negative <= '0';
+			end if;
 		end if;
 
 		if t_signed < 0 then
-			temp_negative <= '1';
-			abs_t         := -t_signed;
+			abs_t := -t_signed;
 		else
-			temp_negative <= '0';
-			abs_t         := t_signed;
+			abs_t := t_signed;
 		end if;
 
 		temp_magnitude <= std_logic_vector(to_unsigned(abs_t, 12));
@@ -218,17 +248,27 @@ begin
 		bcd_ones      <= scratch(15 downto 12);
 	end process bcd_convert;
 
-	-- Drive the four numeric displays via individual decoders
-	hex0_inst: seg7_decoder port map (digit => bcd_ones,      seg => HEX0);
-	hex1_inst: seg7_decoder port map (digit => bcd_tens,      seg => HEX1);
-	hex2_inst: seg7_decoder port map (digit => bcd_hundreds,  seg => HEX2);
-	hex3_inst: seg7_decoder port map (digit => bcd_thousands, seg => HEX3);
+	-- Drive the four numeric displays via individual decoders.  The
+	-- decoded segment patterns are routed through an invalid-reading
+	-- mux below so that out-of-range ADC codes show '----' instead of
+	-- a misleading numeric value.
+	hex0_inst: seg7_decoder port map (digit => bcd_ones,      seg => seg_ones);
+	hex1_inst: seg7_decoder port map (digit => bcd_tens,      seg => seg_tens);
+	hex2_inst: seg7_decoder port map (digit => bcd_hundreds,  seg => seg_hundreds);
+	hex3_inst: seg7_decoder port map (digit => bcd_thousands, seg => seg_thousands);
 
-	-- HEX4: minus sign when negative, blank otherwise.
+	-- HEX0..HEX3: dashes when the ADC code is out of range, else BCD.
+	HEX0 <= SEG_DASH when temp_invalid = '1' else seg_ones;
+	HEX1 <= SEG_DASH when temp_invalid = '1' else seg_tens;
+	HEX2 <= SEG_DASH when temp_invalid = '1' else seg_hundreds;
+	HEX3 <= SEG_DASH when temp_invalid = '1' else seg_thousands;
+
+	-- HEX4: minus sign when negative (and reading is valid), blank
+	-- otherwise.  An invalid reading must not show a stray minus sign.
 	-- Bit assignment: seg(6)=g, seg(5..0)=f,e,d,c,b,a (active-low).
-	--   "0111111" → only segment g on  (minus sign)
+	--   "0111111" → only segment g on  (minus sign / dash)
 	--   "1111111" → all segments off    (blank)
-	HEX4 <= "0111111" when temp_negative = '1' else "1111111";
+	HEX4 <= SEG_DASH when (temp_negative = '1' and temp_invalid = '0') else SEG_BLANK;
 
 	-- HEX5: 'C' for Celsius (segments a, d, e, f on; g, b, c off)
 	-- "1000110" → g=1(off), f=0(on), e=0(on), d=0(on), c=1(off), b=1(off), a=0(on)
