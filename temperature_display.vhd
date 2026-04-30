@@ -2,20 +2,38 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
--- Converts a 12-bit binary ADC value (0–4095) into its decimal
--- representation and drives six 7-segment displays on the DE10-Lite.
+-- Converts a 12-bit MAX10 ADC temperature-sensor reading into a signed
+-- Celsius temperature and drives six 7-segment displays on the DE10-Lite.
 --
--- The binary-to-BCD conversion uses the "double-dabble" (shift-and-add-3)
--- algorithm implemented as a purely combinatorial process.  No clock is
--- needed; the result updates whenever the input changes.
+-- ADC code → °C conversion
+-- ────────────────────────
+-- The MAX10 internal temperature sensor produces a 12-bit code that
+-- decreases as the die temperature rises.  Two reference points from
+-- Intel's MAX10 Analog-to-Digital Converter User Guide are used to
+-- build a linear approximation:
+--
+--     code 3338  →   25 °C
+--     code 2818  →   85 °C
+--
+-- Slope ≈ (85 − 25) / (2818 − 3338) = 60 / −520 °C per code.  We use
+-- 60/512 (i.e. a right-shift by 9) instead of 60/520 so the divide
+-- maps to a cheap arithmetic shift in hardware; the resulting error
+-- is < 2 % over the calibrated range.
+--
+--     T(°C) = 25 + ((3338 − code) × 60) / 512
+--
+-- The signed result is split into a sign bit and a magnitude that is
+-- then run through the double-dabble (shift-and-add-3) binary-to-BCD
+-- converter.  The whole datapath is purely combinatorial; the result
+-- updates whenever the input changes.
 --
 -- Display layout:
 --   HEX5 – 'C' (Celsius indicator)
---   HEX4 – dash / blank separator
---   HEX3 – thousands BCD digit
---   HEX2 – hundreds BCD digit
---   HEX1 – tens BCD digit
---   HEX0 – ones BCD digit
+--   HEX4 – '-' when the temperature is negative, blank otherwise
+--   HEX3 – thousands BCD digit (typically blank)
+--   HEX2 – hundreds  BCD digit (typically blank)
+--   HEX1 – tens      BCD digit
+--   HEX0 – ones      BCD digit
 
 entity temperature_display is
 	port (
@@ -31,6 +49,13 @@ end entity temperature_display;
 
 architecture rtl of temperature_display is
 
+	-- Calibration constants for the linear ADC-code → °C approximation.
+	constant CAL_CODE_25C	: integer := 3338;  -- ADC code at  25 °C
+	constant SLOPE_NUM	: integer := 60;    -- numerator of the slope
+
+	signal temp_magnitude	: std_logic_vector(11 downto 0);
+	signal temp_negative	: std_logic;
+
 	signal bcd_ones		: std_logic_vector(3 downto 0);
 	signal bcd_tens		: std_logic_vector(3 downto 0);
 	signal bcd_hundreds	: std_logic_vector(3 downto 0);
@@ -45,6 +70,44 @@ architecture rtl of temperature_display is
 
 begin
 
+	-- ----------------------------------------------------------------
+	-- ADC code → signed Celsius conversion
+	--
+	-- T(°C) = 25 + ((3338 − code) × 60) / 512
+	--
+	-- The result is split into a sign bit (temp_negative) and a 12-bit
+	-- unsigned magnitude (temp_magnitude) that feeds the BCD pipeline
+	-- below.  The magnitude is clamped to 4095 so the existing 4-digit
+	-- BCD converter cannot overflow even for out-of-range ADC codes.
+	-- ----------------------------------------------------------------
+	temp_convert: process(value)
+		variable code_int	: integer range 0 to 4095;
+		-- Worst-case range of the linear conversion is roughly
+		-- −90 … +420 °C (for ADC codes 4095 and 0 respectively),
+		-- before clamping; widen slightly for safety.
+		variable t_signed	: integer range -512 to 511;
+		variable abs_t		: integer range 0 to 4095;
+	begin
+		code_int := to_integer(unsigned(value));
+		-- Integer division by 512 (a power of two) synthesises to an
+		-- arithmetic right-shift on Quartus / standard tooling.
+		t_signed := 25 + ((CAL_CODE_25C - code_int) * SLOPE_NUM) / 512;
+
+		if t_signed < 0 then
+			temp_negative <= '1';
+			abs_t         := -t_signed;
+		else
+			temp_negative <= '0';
+			abs_t         := t_signed;
+		end if;
+
+		if abs_t > 4095 then
+			abs_t := 4095;
+		end if;
+
+		temp_magnitude <= std_logic_vector(to_unsigned(abs_t, 12));
+	end process temp_convert;
+
 	-- Double-dabble binary-to-BCD conversion.
 	--
 	-- A 28-bit scratch register is used:
@@ -58,12 +121,12 @@ begin
 	--   1. For every BCD nibble: if the nibble >= 5, add 3.
 	--   2. Shift the entire 28-bit register left by one.
 	-- After 12 iterations the BCD digits occupy scratch(27:12).
-	bcd_convert: process(value)
+	bcd_convert: process(temp_magnitude)
 		variable scratch : std_logic_vector(27 downto 0);
 		variable nibble  : unsigned(3 downto 0);
 	begin
 		scratch             := (others => '0');
-		scratch(11 downto 0) := value;
+		scratch(11 downto 0) := temp_magnitude;
 
 		for i in 0 to 11 loop
 			-- Ones digit (scratch 15:12)
@@ -106,11 +169,11 @@ begin
 	hex2_inst: seg7_decoder port map (digit => bcd_hundreds,  seg => HEX2);
 	hex3_inst: seg7_decoder port map (digit => bcd_thousands, seg => HEX3);
 
-	-- HEX4: dash/minus sign (only middle segment g is on).
-	-- Bit assignment: seg(6)=g, seg(5..0)=f,e,d,c,b,a
-	-- Active-low: '0' = LED on.
-	-- "0111111" → g=0 (on), all others=1 (off) = horizontal middle bar.
-	HEX4 <= "0111111";
+	-- HEX4: minus sign when negative, blank otherwise.
+	-- Bit assignment: seg(6)=g, seg(5..0)=f,e,d,c,b,a (active-low).
+	--   "0111111" → only segment g on  (minus sign)
+	--   "1111111" → all segments off    (blank)
+	HEX4 <= "0111111" when temp_negative = '1' else "1111111";
 
 	-- HEX5: 'C' for Celsius (segments a, d, e, f on; g, b, c off)
 	-- "1000110" → g=1(off), f=0(on), e=0(on), d=0(on), c=1(off), b=1(off), a=0(on)
