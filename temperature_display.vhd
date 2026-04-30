@@ -2,8 +2,14 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
--- Converts a 12-bit binary ADC value (0–4095) into its decimal
--- representation and drives six 7-segment displays on the DE10-Lite.
+-- Converts a 12-bit raw MAX10 ADC temperature-sensor code into degrees
+-- Celsius and drives six 7-segment displays on the DE10-Lite.
+--
+-- Temperature conversion (Intel MAX 10 internal temperature sensor formula):
+--   T(°C) = 693 × raw_code / 4096 − 265
+-- The intermediate product (693 × 4095 = 2 837 835) fits in a 22-bit
+-- integer, so no overflow occurs in standard VHDL integer arithmetic.
+-- Results below 0 °C are clamped to 0 before display.
 --
 -- The binary-to-BCD conversion uses the "double-dabble" (shift-and-add-3)
 -- algorithm implemented as a purely combinatorial process.  No clock is
@@ -31,6 +37,9 @@ end entity temperature_display;
 
 architecture rtl of temperature_display is
 
+	-- Temperature-converted value fed into the BCD stage
+	signal value_celsius	: std_logic_vector(11 downto 0);
+
 	signal bcd_ones		: std_logic_vector(3 downto 0);
 	signal bcd_tens		: std_logic_vector(3 downto 0);
 	signal bcd_hundreds	: std_logic_vector(3 downto 0);
@@ -45,6 +54,21 @@ architecture rtl of temperature_display is
 
 begin
 
+	-- Convert raw ADC code to Celsius using the Intel MAX 10 formula:
+	--   T(°C) = 693 × raw / 4096 − 265
+	-- Results below zero are clamped to zero (cannot display negatives).
+	temp_convert: process(value)
+		variable raw  : integer range 0 to 4095;
+		variable temp : integer;
+	begin
+		raw  := to_integer(unsigned(value));
+		temp := (693 * raw) / 4096 - 265;
+		if temp < 0 then
+			temp := 0;
+		end if;
+		value_celsius <= std_logic_vector(to_unsigned(temp, 12));
+	end process temp_convert;
+
 	-- Double-dabble binary-to-BCD conversion.
 	--
 	-- A 28-bit scratch register is used:
@@ -58,12 +82,12 @@ begin
 	--   1. For every BCD nibble: if the nibble >= 5, add 3.
 	--   2. Shift the entire 28-bit register left by one.
 	-- After 12 iterations the BCD digits occupy scratch(27:12).
-	bcd_convert: process(value)
+	bcd_convert: process(value_celsius)
 		variable scratch : std_logic_vector(27 downto 0);
 		variable nibble  : unsigned(3 downto 0);
 	begin
 		scratch             := (others => '0');
-		scratch(11 downto 0) := value;
+		scratch(11 downto 0) := value_celsius;
 
 		for i in 0 to 11 loop
 			-- Ones digit (scratch 15:12)
