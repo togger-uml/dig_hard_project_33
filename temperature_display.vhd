@@ -6,14 +6,17 @@ use ieee.numeric_std.all;
 -- Celsius and drives six 7-segment displays on the DE10-Lite.
 --
 -- Temperature conversion (Intel MAX 10 internal temperature sensor formula):
---   T(°C) = 693 × raw_code / 1024 − 265
--- The fiftyfivenm_adcblock in temperature-only mode (analog_input_pin_mask=0)
--- outputs a 10-bit code in bits[9:0] of its 12-bit dout port, so the
--- effective full-scale is 1024 (2^10), not 4096.  At 25 °C the raw code is
--- approximately 429; using /4096 would give (693×429)/4096−265 = −193 which
--- clamps to zero.  Using /1024 gives (693×429)/1024−265 ≈ 25 °C.
--- The intermediate product (693 × 1023 = 708 939) fits comfortably in a
--- 20-bit integer, so no overflow occurs.
+--   T(°C) = 693 × raw_code / 4096 − 265
+-- Reference: Intel MAX 10 FPGA Device Datasheet, internal temperature sensor.
+-- At 25 °C the raw 12-bit ADC code is approximately 1716.
+--
+-- IMPORTANT: the multiplication 693 × raw can reach 693 × 4095 = 2 837 835,
+-- which requires 22 bits and overflows a 12-bit operand.  Declaring the
+-- working variable as 'integer range 0 to 4095' causes Quartus to synthesise
+-- the multiply with only 12-bit precision, truncating the product and making
+-- the result always negative (→ clamped to zero).  The fix is to use an
+-- explicit unsigned(23 downto 0) accumulator so the full 24-bit product is
+-- preserved before the divide.
 -- Results below 0 °C are clamped to 0 before display.
 --
 -- The binary-to-BCD conversion uses the "double-dabble" (shift-and-add-3)
@@ -60,19 +63,22 @@ architecture rtl of temperature_display is
 begin
 
 	-- Convert raw ADC code to Celsius using the Intel MAX 10 formula:
-	--   T(°C) = 693 × raw / 1024 − 265
-	-- The ADC outputs a 10-bit temperature code in bits[9:0] (divisor 1024).
+	--   T(°C) = 693 × raw / 4096 − 265
+	-- Use an explicit unsigned(23 downto 0) accumulator for the product so
+	-- that Quartus does not narrow the 22-bit intermediate value to 12 bits.
 	-- Results below zero are clamped to zero (cannot display negatives).
 	temp_convert: process(value)
-		variable raw  : integer range 0 to 4095;
-		variable temp : integer;
+		variable raw_u : unsigned(11 downto 0);
+		variable prod  : unsigned(23 downto 0);
+		variable degc  : integer;
 	begin
-		raw  := to_integer(unsigned(value));
-		temp := (693 * raw) / 1024 - 265;
-		if temp < 0 then
-			temp := 0;
+		raw_u := unsigned(value);
+		prod  := to_unsigned(693, 12) * raw_u;   -- 12×12 → 24-bit, no overflow
+		degc  := to_integer(prod) / 4096 - 265;
+		if degc < 0 then
+			degc := 0;
 		end if;
-		value_celsius <= std_logic_vector(to_unsigned(temp, 12));
+		value_celsius <= std_logic_vector(to_unsigned(degc, 12));
 	end process temp_convert;
 
 	-- Double-dabble binary-to-BCD conversion.
