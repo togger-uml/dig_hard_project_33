@@ -6,9 +6,14 @@ use ieee.numeric_std.all;
 -- Celsius and drives six 7-segment displays on the DE10-Lite.
 --
 -- Temperature conversion (Intel MAX 10 internal temperature sensor formula):
---   T(°C) = 693 × raw_code / 4096 − 265
--- The intermediate product (693 × 4095 = 2 837 835) fits in a 22-bit
--- integer, so no overflow occurs in standard VHDL integer arithmetic.
+--   T(°C) = 693 × raw_code / 1024 − 265
+-- The fiftyfivenm_adcblock in temperature-only mode (analog_input_pin_mask=0)
+-- outputs a 10-bit code in bits[9:0] of its 12-bit dout port, so the
+-- effective full-scale is 1024 (2^10), not 4096.  At 25 °C the raw code is
+-- approximately 429; using /4096 would give (693×429)/4096−265 = −193 which
+-- clamps to zero.  Using /1024 gives (693×429)/1024−265 ≈ 25 °C.
+-- The intermediate product (693 × 1023 = 708 939) fits comfortably in a
+-- 20-bit integer, so no overflow occurs.
 -- Results below 0 °C are clamped to 0 before display.
 --
 -- The binary-to-BCD conversion uses the "double-dabble" (shift-and-add-3)
@@ -55,14 +60,15 @@ architecture rtl of temperature_display is
 begin
 
 	-- Convert raw ADC code to Celsius using the Intel MAX 10 formula:
-	--   T(°C) = 693 × raw / 4096 − 265
+	--   T(°C) = 693 × raw / 1024 − 265
+	-- The ADC outputs a 10-bit temperature code in bits[9:0] (divisor 1024).
 	-- Results below zero are clamped to zero (cannot display negatives).
 	temp_convert: process(value)
 		variable raw  : integer range 0 to 4095;
 		variable temp : integer;
 	begin
 		raw  := to_integer(unsigned(value));
-		temp := (693 * raw) / 4096 - 265;
+		temp := (693 * raw) / 1024 - 265;
 		if temp < 0 then
 			temp := 0;
 		end if;
