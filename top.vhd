@@ -182,9 +182,12 @@ architecture rtl of top is
 	-- Pipeline status indicators in the CLOCK_50 domain, used to drive
 	-- HEX5 with a single-character diagnostic ('P' / 'F' / 'C').
 	-- pll_locked_s1/pll_locked_50 form a 2-flop CDC synchroniser
-	-- bringing the PLL lock signal into CLOCK_50.  sample_seen is a
-	-- sticky flag set the first time a FIFO word is latched into
-	-- display_reg, cleared by the CLOCK_50 reset synchroniser.
+	-- bringing the PLL lock signal into CLOCK_50; it shares the same
+	-- async reset as the consumer reset synchroniser (KEY(0)) so all
+	-- consumer-domain status flops come out of reset together.
+	-- sample_seen is a sticky flag set the first time a FIFO word is
+	-- latched into display_reg; it is cleared by rst_50_n in the
+	-- consumer process.
 	signal pll_locked_s1, pll_locked_50	: std_logic := '0';
 	signal sample_seen	: std_logic := '0';
 
@@ -325,6 +328,13 @@ begin
 	-- pll_locked is generated inside the PLL (asynchronous to CLOCK_50)
 	-- so it must be synchronised before being used as a status bit by
 	-- the consumer-domain display logic.
+	--
+	-- This synchroniser uses rst_async_n (= KEY(0)) as its async reset
+	-- so it comes out of reset in lock-step with sync_rst_50.  A side
+	-- effect is that while KEY(0) is held low, pll_locked_50 is forced
+	-- to '0' even if the PLL itself remains locked, briefly showing
+	-- 'P' on HEX5; this is harmless because the consumer is in reset
+	-- and the display is being re-initialised anyway.
 	-- ----------------------------------------------------------------
 	sync_pll_locked: process(CLOCK_50, rst_async_n)
 	begin
