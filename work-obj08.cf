@@ -1,9 +1,0 @@
-v 4
-file . "consumer_fsm.vhd" "1c785914d2f43bb467cdd3740b117ea8695fc6b5" "20260430062548.086":
-  entity consumer_fsm at 1( 0) + 0 on 14;
-  architecture rtl of consumer_fsm at 52( 2170) + 0 on 15;
-file . "uc_sequencer.vhd" "ebb75c2e9a61d0b63c5197da7f18e0355d7b7948" "20260430062548.085":
-  entity uc_sequencer at 1( 0) + 0 on 12;
-  architecture rtl of uc_sequencer at 34( 1248) + 0 on 13;
-file . "uc_pkg.vhd" "31c80bd20336a6dc22083fca30de31ca7d24cdcf" "20260430062548.083":
-  package uc_pkg at 1( 0) + 0 on 11;
