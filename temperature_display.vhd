@@ -10,13 +10,15 @@ use ieee.numeric_std.all;
 -- Reference: Intel MAX 10 FPGA Device Datasheet, internal temperature sensor.
 -- At 25 °C the raw 12-bit ADC code is approximately 1716.
 --
--- IMPORTANT: the multiplication 693 × raw can reach 693 × 4095 = 2 837 835,
--- which requires 22 bits and overflows a 12-bit operand.  Declaring the
--- working variable as 'integer range 0 to 4095' causes Quartus to synthesise
--- the multiply with only 12-bit precision, truncating the product and making
--- the result always negative (→ clamped to zero).  The fix is to use an
--- explicit unsigned(23 downto 0) accumulator so the full 24-bit product is
--- preserved before the divide.
+-- Implementation notes:
+--   * 693 × raw requires 22 bits (max 2 837 835).  The product is held in an
+--     explicit unsigned(23 downto 0) so Quartus synthesises the full 24-bit
+--     multiplier with no truncation.
+--   * Division by 4096 is implemented as a pure bit-slice: prod(23 downto 12).
+--     This is just wiring — no integer arithmetic, no synthesis ambiguity.
+--   * Both the temperature conversion and BCD stages are combined into a
+--     single combinatorial process to avoid any intermediate-signal delta-cycle
+--     boundary that could confuse synthesis.
 -- Results below 0 °C are clamped to 0 before display.
 --
 -- The binary-to-BCD conversion uses the "double-dabble" (shift-and-add-3)
@@ -45,9 +47,6 @@ end entity temperature_display;
 
 architecture rtl of temperature_display is
 
-	-- Temperature-converted value fed into the BCD stage
-	signal value_celsius	: std_logic_vector(11 downto 0);
-
 	signal bcd_ones		: std_logic_vector(3 downto 0);
 	signal bcd_tens		: std_logic_vector(3 downto 0);
 	signal bcd_hundreds	: std_logic_vector(3 downto 0);
@@ -62,44 +61,39 @@ architecture rtl of temperature_display is
 
 begin
 
-	-- Convert raw ADC code to Celsius using the Intel MAX 10 formula:
-	--   T(°C) = 693 × raw / 4096 − 265
-	-- Use an explicit unsigned(23 downto 0) accumulator for the product so
-	-- that Quartus does not narrow the 22-bit intermediate value to 12 bits.
-	-- Results below zero are clamped to zero (cannot display negatives).
-	temp_convert: process(value)
-		variable raw_u : unsigned(11 downto 0);
-		variable prod  : unsigned(23 downto 0);
-		variable degc  : integer;
-	begin
-		raw_u := unsigned(value);
-		prod  := to_unsigned(693, 12) * raw_u;   -- 12×12 → 24-bit, no overflow
-		degc  := to_integer(prod) / 4096 - 265;
-		if degc < 0 then
-			degc := 0;
-		end if;
-		value_celsius <= std_logic_vector(to_unsigned(degc, 12));
-	end process temp_convert;
-
-	-- Double-dabble binary-to-BCD conversion.
+	-- Combined temperature conversion + double-dabble BCD conversion.
 	--
-	-- A 28-bit scratch register is used:
-	--   scratch(27:24) = thousands digit
-	--   scratch(23:20) = hundreds  digit
-	--   scratch(19:16) = tens      digit
-	--   scratch(15:12) = ones      digit
-	--   scratch(11:0)  = binary input (shifted out over 12 iterations)
+	-- Step 1 – Temperature:
+	--   prod    = 693 × raw                  (unsigned 24-bit; no truncation)
+	--   shifted = prod(23 downto 12)          (divide by 4096 via bit-slice)
+	--   celsius = shifted − 265  (clamped to 0 when shifted ≤ 265)
 	--
-	-- Each iteration:
-	--   1. For every BCD nibble: if the nibble >= 5, add 3.
-	--   2. Shift the entire 28-bit register left by one.
-	-- After 12 iterations the BCD digits occupy scratch(27:12).
-	bcd_convert: process(value_celsius)
+	-- Step 2 – Double-dabble (shift-and-add-3) BCD:
+	--   28-bit scratch:  [27:24]=thousands  [23:20]=hundreds
+	--                    [19:16]=tens       [15:12]=ones
+	--                    [11:0] =binary input
+	--   12 iterations: add-3 to any nibble ≥ 5, then shift left 1.
+	temp_bcd_convert: process(value)
+		variable raw_u   : unsigned(11 downto 0);
+		variable prod    : unsigned(23 downto 0);
+		variable shifted : unsigned(11 downto 0);
+		variable celsius : unsigned(11 downto 0);
 		variable scratch : std_logic_vector(27 downto 0);
 		variable nibble  : unsigned(3 downto 0);
 	begin
-		scratch             := (others => '0');
-		scratch(11 downto 0) := value_celsius;
+		-- Temperature conversion (pure unsigned, no integer division)
+		raw_u   := unsigned(value);
+		prod    := to_unsigned(693, 12) * raw_u;    -- 24-bit product
+		shifted := prod(23 downto 12);              -- exact ÷4096 via bit-slice
+		if shifted > to_unsigned(265, 12) then
+			celsius := shifted - to_unsigned(265, 12);
+		else
+			celsius := (others => '0');
+		end if;
+
+		-- Double-dabble binary-to-BCD
+		scratch              := (others => '0');
+		scratch(11 downto 0) := std_logic_vector(celsius);
 
 		for i in 0 to 11 loop
 			-- Ones digit (scratch 15:12)
@@ -134,7 +128,7 @@ begin
 		bcd_hundreds  <= scratch(23 downto 20);
 		bcd_tens      <= scratch(19 downto 16);
 		bcd_ones      <= scratch(15 downto 12);
-	end process bcd_convert;
+	end process temp_bcd_convert;
 
 	-- Drive the four numeric displays via individual decoders
 	hex0_inst: seg7_decoder port map (digit => bcd_ones,      seg => HEX0);
