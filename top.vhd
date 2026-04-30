@@ -38,6 +38,18 @@ use ieee.numeric_std.all;
 -- caused the consumer to be held in reset whenever pll_locked was
 -- low, making KEY(0) appear inert and leaving display_reg stuck at
 -- its reset value.
+--
+-- HEX5 pipeline-status indicator
+-- ──────────────────────────────
+-- HEX5 (driven by temperature_display) shows a one-character status
+-- letter so that an "all dashes" reading on HEX0..HEX3 is no longer
+-- ambiguous:
+--   'P' – PLL not locked (producer domain has no clock)
+--   'F' – PLL locked but no FIFO sample has ever been latched
+--   'C' – at least one valid sample seen; normal Celsius indicator
+-- The CLOCK_50-domain status signals driving this are pll_locked_50
+-- (a 2-flop synchroniser of pll_locked) and sample_seen (a sticky
+-- flag set the first time a FIFO word is latched into display_reg).
 
 entity top is
 	port (
@@ -119,7 +131,9 @@ architecture rtl of top is
 
 	component temperature_display is
 		port (
-			value	: in	std_logic_vector(11 downto 0);
+			value					: in	std_logic_vector(11 downto 0);
+			status_pll_locked		: in	std_logic;
+			status_sample_seen		: in	std_logic;
 			HEX0	: out	std_logic_vector(6 downto 0);
 			HEX1	: out	std_logic_vector(6 downto 0);
 			HEX2	: out	std_logic_vector(6 downto 0);
@@ -164,6 +178,15 @@ architecture rtl of top is
 
 	-- Consumer-side display register
 	signal display_reg	: std_logic_vector(11 downto 0) := (others => '0');
+
+	-- Pipeline status indicators in the CLOCK_50 domain, used to drive
+	-- HEX5 with a single-character diagnostic ('P' / 'F' / 'C').
+	-- pll_locked_s1/pll_locked_50 form a 2-flop CDC synchroniser
+	-- bringing the PLL lock signal into CLOCK_50.  sample_seen is a
+	-- sticky flag set the first time a FIFO word is latched into
+	-- display_reg, cleared by the CLOCK_50 reset synchroniser.
+	signal pll_locked_s1, pll_locked_50	: std_logic := '0';
+	signal sample_seen	: std_logic := '0';
 
 begin
 
@@ -283,6 +306,7 @@ begin
 		if rst_50_n = '0' then
 			display_reg <= (others => '0');
 			fifo_ren    <= '0';
+			sample_seen <= '0';
 		elsif rising_edge(CLOCK_50) then
 			fifo_ren <= '0';           -- default: no read
 			if fifo_rempty = '0' then
@@ -291,16 +315,36 @@ begin
 				-- word at the current (pre-advance) read pointer.
 				fifo_ren    <= '1';
 				display_reg <= fifo_rdata;
+				sample_seen <= '1';    -- sticky: first valid sample arrived
 			end if;
 		end if;
 	end process consumer_proc;
+
+	-- ----------------------------------------------------------------
+	-- pll_locked → CLOCK_50 CDC synchroniser (2-flop)
+	-- pll_locked is generated inside the PLL (asynchronous to CLOCK_50)
+	-- so it must be synchronised before being used as a status bit by
+	-- the consumer-domain display logic.
+	-- ----------------------------------------------------------------
+	sync_pll_locked: process(CLOCK_50, rst_async_n)
+	begin
+		if rst_async_n = '0' then
+			pll_locked_s1 <= '0';
+			pll_locked_50 <= '0';
+		elsif rising_edge(CLOCK_50) then
+			pll_locked_s1 <= pll_locked;
+			pll_locked_50 <= pll_locked_s1;
+		end if;
+	end process sync_pll_locked;
 
 	-- ----------------------------------------------------------------
 	-- Temperature display (consumer clock domain, combinatorial)
 	-- ----------------------------------------------------------------
 	disp_inst: temperature_display
 		port map (
-			value => display_reg,
+			value              => display_reg,
+			status_pll_locked  => pll_locked_50,
+			status_sample_seen => sample_seen,
 			HEX0  => HEX0,
 			HEX1  => HEX1,
 			HEX2  => HEX2,

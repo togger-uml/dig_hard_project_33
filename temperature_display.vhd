@@ -44,15 +44,37 @@ use ieee.numeric_std.all;
 --   so an invalid reading is visually distinct from a real ±endpoint
 --   temperature instead of being silently clamped to +125 °C / −40 °C.
 
+-- Pipeline status indicator on HEX5
+-- ─────────────────────────────────
+-- HEX5 is repurposed as a pipeline-stage diagnostic so that an "all
+-- dashes" reading on HEX0..HEX3 can be attributed to the actual stage
+-- that is failing instead of being indistinguishable from "no sample
+-- yet".  The character shown is:
+--
+--   'P' – the PLL has not asserted locked.  No producer-domain logic
+--         is running, the ADC is not converting, and the FIFO is
+--         empty.  This is the expected state immediately after reset
+--         while the PLL is acquiring lock.
+--   'F' – PLL is locked but no FIFO sample has ever been latched into
+--         display_reg.  Either the ADC FSM is wedged (e.g. EOC never
+--         arrives) or the FIFO write side is not advancing.
+--   'C' – at least one valid sample has been latched.  This is the
+--         normal steady-state Celsius indicator.
 entity temperature_display is
 	port (
-		value	: in	std_logic_vector(11 downto 0);
-		HEX0	: out	std_logic_vector(6 downto 0);
-		HEX1	: out	std_logic_vector(6 downto 0);
-		HEX2	: out	std_logic_vector(6 downto 0);
-		HEX3	: out	std_logic_vector(6 downto 0);
-		HEX4	: out	std_logic_vector(6 downto 0);
-		HEX5	: out	std_logic_vector(6 downto 0)
+		value					: in	std_logic_vector(11 downto 0);
+		-- Pipeline status (CLOCK_50 domain, both active-high).
+		-- status_pll_locked    – PLL locked synchroniser output
+		-- status_sample_seen   – sticky flag, set when first FIFO word
+		--                        is latched into display_reg
+		status_pll_locked		: in	std_logic;
+		status_sample_seen		: in	std_logic;
+		HEX0					: out	std_logic_vector(6 downto 0);
+		HEX1					: out	std_logic_vector(6 downto 0);
+		HEX2					: out	std_logic_vector(6 downto 0);
+		HEX3					: out	std_logic_vector(6 downto 0);
+		HEX4					: out	std_logic_vector(6 downto 0);
+		HEX5					: out	std_logic_vector(6 downto 0)
 	);
 end entity temperature_display;
 
@@ -270,8 +292,13 @@ begin
 	--   "1111111" → all segments off    (blank)
 	HEX4 <= SEG_DASH when (temp_negative = '1' and temp_invalid = '0') else SEG_BLANK;
 
-	-- HEX5: 'C' for Celsius (segments a, d, e, f on; g, b, c off)
-	-- "1000110" → g=1(off), f=0(on), e=0(on), d=0(on), c=1(off), b=1(off), a=0(on)
-	HEX5 <= "1000110";
+	-- HEX5: pipeline status indicator (see entity header for rationale).
+	--   'P' = "0001100"  segments a,b,e,f,g on  → PLL not locked
+	--   'F' = "0001110"  segments a,e,f,g   on  → no sample seen yet
+	--   'C' = "1000110"  segments a,d,e,f   on  → normal Celsius marker
+	-- Bit assignment: seg(6)=g, seg(5..0)=f,e,d,c,b,a (active-low).
+	HEX5 <= "0001100" when status_pll_locked  = '0' else
+	        "0001110" when status_sample_seen = '0' else
+	        "1000110";
 
 end architecture rtl;
