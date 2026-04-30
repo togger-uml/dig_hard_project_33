@@ -25,9 +25,19 @@ use ieee.numeric_std.all;
 -- Reset
 -- ─────
 -- KEY(0) is the active-low asynchronous reset.  The PLL areset is
--- driven from the inverted KEY(0).  Both clock-domain reset
--- synchronisers are additionally held in reset until the PLL locked
--- signal asserts, ensuring no logic runs on an unstable clock.
+-- driven from the inverted KEY(0).
+--
+-- The producer-domain (adc_clk) reset synchroniser is additionally
+-- held in reset until the PLL has locked, because adc_clk is sourced
+-- from the PLL output and must not clock logic until it is stable.
+--
+-- The consumer-domain (CLOCK_50) reset synchroniser is NOT gated by
+-- pll_locked: CLOCK_50 is the always-running board oscillator and
+-- the consumer logic (FIFO read side, display register) is safe to
+-- run regardless of PLL state.  Gating it on pll_locked previously
+-- caused the consumer to be held in reset whenever pll_locked was
+-- low, making KEY(0) appear inert and leaving display_reg stuck at
+-- its reset value.
 
 entity top is
 	port (
@@ -131,8 +141,11 @@ architecture rtl of top is
 	signal pll_areset	: std_logic;   -- active-high PLL reset (from KEY(0))
 	signal pll_locked	: std_logic;   -- PLL lock indicator
 
-	-- Reset (active-low; KEY(0) AND pll_locked drive both synchronisers)
-	signal rst_async_n	: std_logic;
+	-- Reset (active-low)
+	-- rst_async_n     – consumer (CLOCK_50) async reset: KEY(0) only
+	-- rst_adc_async_n – producer (adc_clk)  async reset: KEY(0) AND pll_locked
+	signal rst_async_n		: std_logic;
+	signal rst_adc_async_n	: std_logic;
 
 	-- Producer-domain reset synchroniser
 	signal rst_adc_s1, rst_adc_n	: std_logic := '0';
@@ -154,18 +167,20 @@ architecture rtl of top is
 
 begin
 
-	-- KEY(0) is active-low; convert to active-high for PLL areset and
-	-- active-low for the domain reset synchronisers.
-	-- Hold both domain resets until the PLL has locked.
-	pll_areset  <= not KEY(0);
-	rst_async_n <= KEY(0) and pll_locked;
+	-- KEY(0) is active-low; convert to active-high for PLL areset.
+	-- Consumer reset uses KEY(0) directly (CLOCK_50 always runs).
+	-- Producer reset is additionally gated by pll_locked because
+	-- adc_clk is derived from the PLL output.
+	pll_areset      <= not KEY(0);
+	rst_async_n     <= KEY(0);
+	rst_adc_async_n <= KEY(0) and pll_locked;
 
 	-- ----------------------------------------------------------------
 	-- Reset synchroniser – producer clock domain (adc_clk)
 	-- ----------------------------------------------------------------
-	sync_rst_adc: process(adc_clk, rst_async_n)
+	sync_rst_adc: process(adc_clk, rst_adc_async_n)
 	begin
-		if rst_async_n = '0' then
+		if rst_adc_async_n = '0' then
 			rst_adc_s1 <= '0';
 			rst_adc_n  <= '0';
 		elsif rising_edge(adc_clk) then
