@@ -8,19 +8,19 @@ use ieee.numeric_std.all;
 -- ADC code → °C conversion
 -- ────────────────────────
 -- The MAX10 internal temperature sensor produces a 12-bit code that
--- decreases as the die temperature rises.  Two reference points from
--- Intel's MAX10 Analog-to-Digital Converter User Guide are used to
--- build a linear approximation:
+-- decreases (non-linearly) as the die temperature rises.  The mapping
+-- is defined by Table 4, "Temperature Code Conversion Table", in the
+-- Intel MAX 10 Analog to Digital Converter User Guide (UG-M10ADC):
 --
---     code 3338  →   25 °C
---     code 2818  →   85 °C
+--     -40 °C → code 3798        25 °C → code 3677
+--     ...                        85 °C → code 3542
+--     125 °C → code 3431       100 °C → code 3500
 --
--- Slope ≈ (85 − 25) / (2818 − 3338) = 60 / −520 °C per code.  We use
--- 60/512 (i.e. a right-shift by 9) instead of 60/520 so the divide
--- maps to a cheap arithmetic shift in hardware; the resulting error
--- is < 2 % over the calibrated range.
---
---     T(°C) = 25 + ((3338 − code) × 60) / 512
+-- The full table (165 entries, −40 °C … +125 °C) is reproduced as a
+-- 368-entry ROM (CODE_LO_C .. CODE_HI_C) below.  Each ROM slot holds
+-- the integer Celsius value of the temperature whose tabulated code is
+-- closest to the slot's code.  Codes outside the calibrated range are
+-- clamped to −40 °C / +125 °C.
 --
 -- The signed result is split into a sign bit and a magnitude that is
 -- then run through the double-dabble (shift-and-add-3) binary-to-BCD
@@ -49,9 +49,66 @@ end entity temperature_display;
 
 architecture rtl of temperature_display is
 
-	-- Calibration constants for the linear ADC-code → °C approximation.
-	constant CAL_CODE_25C	: integer := 3338;  -- ADC code at  25 °C
-	constant SLOPE_NUM	: integer := 60;    -- numerator of the slope
+	-- ----------------------------------------------------------------
+	-- ADC-code → °C lookup table (UG-M10ADC Table 4)
+	-- ----------------------------------------------------------------
+	-- The TSD produces codes in the range 3431 (≈125 °C) to 3798 (−40 °C).
+	-- For each code in that span, CODE_TO_TEMP_C holds the integer °C
+	-- whose tabulated code is closest to the index value.  Codes outside
+	-- this range are clamped at the endpoints (see temp_convert below).
+	constant CODE_LO_C	: integer := 3431;   -- code at +125 °C (table min)
+	constant CODE_HI_C	: integer := 3798;   -- code at  −40 °C (table max)
+
+	type code_to_temp_t is array(CODE_LO_C to CODE_HI_C) of integer range -40 to 125;
+
+	constant CODE_TO_TEMP_C : code_to_temp_t := (
+		 125,  124,  124,  124,  124,  123,  123,  123,
+		 123,  123,  123,  123,  122,  122,  122,  122,
+		 121,  121,  121,  120,  119,  119,  119,  118,
+		 118,  118,  118,  117,  117,  116,  115,  115,
+		 114,  114,  114,  114,  113,  113,  113,  112,
+		 112,  112,  111,  111,  111,  110,  110,  110,
+		 109,  109,  109,  108,  108,  108,  107,  107,
+		 107,  106,  106,  105,  104,  104,  103,  103,
+		 102,  102,  101,  101,  100,  100,   99,   99,
+		  98,   98,   98,   97,   97,   97,   96,   96,
+		  96,   95,   95,   95,   94,   94,   94,   93,
+		  93,   93,   92,   92,   91,   91,   90,   89,
+		  89,   88,   88,   88,   88,   87,   87,   87,
+		  87,   86,   86,   86,   86,   85,   85,   85,
+		  85,   84,   84,   84,   83,   82,   81,   80,
+		  79,   78,   78,   77,   77,   77,   76,   76,
+		  76,   75,   75,   75,   74,   74,   74,   73,
+		  73,   73,   72,   72,   72,   71,   71,   71,
+		  70,   70,   70,   69,   69,   69,   68,   68,
+		  68,   67,   67,   67,   66,   66,   66,   65,
+		  64,   63,   62,   61,   60,   60,   59,   59,
+		  59,   58,   58,   58,   57,   57,   57,   56,
+		  56,   56,   55,   55,   55,   54,   54,   54,
+		  53,   53,   53,   52,   52,   52,   51,   51,
+		  51,   50,   50,   50,   49,   49,   48,   48,
+		  47,   47,   46,   46,   45,   45,   44,   44,
+		  43,   43,   42,   41,   40,   39,   39,   39,
+		  38,   38,   38,   37,   37,   37,   36,   36,
+		  35,   35,   34,   34,   33,   33,   32,   32,
+		  31,   31,   30,   30,   29,   29,   28,   28,
+		  28,   27,   27,   27,   26,   26,   25,   24,
+		  23,   23,   22,   22,   21,   21,   21,   20,
+		  20,   20,   20,   20,   20,   19,   19,   19,
+		  19,   18,   17,   16,   15,   14,   13,   13,
+		  12,   11,   11,   10,   10,    9,    9,    8,
+		   8,    7,    7,    6,    6,    5,    5,    4,
+		   4,    3,    2,    2,    1,    1,    1,    0,
+		   0,    0,   -1,   -1,   -2,   -3,   -4,   -4,
+		  -5,   -5,   -6,   -6,   -7,   -7,   -8,   -8,
+		  -9,   -9,  -10,  -10,  -11,  -11,  -12,  -12,
+		 -13,  -14,  -15,  -15,  -16,  -16,  -16,  -17,
+		 -17,  -17,  -18,  -18,  -19,  -19,  -20,  -21,
+		 -22,  -22,  -23,  -23,  -24,  -25,  -25,  -26,
+		 -26,  -27,  -27,  -28,  -28,  -29,  -30,  -31,
+		 -31,  -32,  -32,  -33,  -34,  -34,  -35,  -35,
+		 -36,  -36,  -37,  -38,  -38,  -39,  -40,  -40
+	);
 
 	signal temp_magnitude	: std_logic_vector(11 downto 0);
 	signal temp_negative	: std_logic;
@@ -71,27 +128,29 @@ architecture rtl of temperature_display is
 begin
 
 	-- ----------------------------------------------------------------
-	-- ADC code → signed Celsius conversion
-	--
-	-- T(°C) = 25 + ((3338 − code) × 60) / 512
+	-- ADC code → signed Celsius conversion via UG-M10ADC Table 4 lookup.
 	--
 	-- The result is split into a sign bit (temp_negative) and a 12-bit
 	-- unsigned magnitude (temp_magnitude) that feeds the BCD pipeline
-	-- below.  The magnitude is clamped to 4095 so the existing 4-digit
-	-- BCD converter cannot overflow even for out-of-range ADC codes.
+	-- below.  Codes outside the calibrated range [CODE_LO_C..CODE_HI_C]
+	-- are clamped to +125 °C / −40 °C respectively.
 	-- ----------------------------------------------------------------
 	temp_convert: process(value)
 		variable code_int	: integer range 0 to 4095;
-		-- Worst-case range of the linear conversion is roughly
-		-- −90 … +420 °C (for ADC codes 4095 and 0 respectively),
-		-- before clamping; widen slightly for safety.
-		variable t_signed	: integer range -512 to 511;
-		variable abs_t		: integer range 0 to 4095;
+		variable t_signed	: integer range -40 to 125;
+		variable abs_t		: integer range 0 to 125;
 	begin
 		code_int := to_integer(unsigned(value));
-		-- Integer division by 512 (a power of two) synthesises to an
-		-- arithmetic right-shift on Quartus / standard tooling.
-		t_signed := 25 + ((CAL_CODE_25C - code_int) * SLOPE_NUM) / 512;
+
+		if code_int <= CODE_LO_C then
+			-- Codes at or below the table minimum → maximum temperature
+			t_signed := 125;
+		elsif code_int >= CODE_HI_C then
+			-- Codes at or above the table maximum → minimum temperature
+			t_signed := -40;
+		else
+			t_signed := CODE_TO_TEMP_C(code_int);
+		end if;
 
 		if t_signed < 0 then
 			temp_negative <= '1';
@@ -99,10 +158,6 @@ begin
 		else
 			temp_negative <= '0';
 			abs_t         := t_signed;
-		end if;
-
-		if abs_t > 4095 then
-			abs_t := 4095;
 		end if;
 
 		temp_magnitude <= std_logic_vector(to_unsigned(abs_t, 12));
