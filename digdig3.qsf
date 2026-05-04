@@ -52,6 +52,7 @@ set_global_assignment -name EDA_GENERATE_FUNCTIONAL_NETLIST OFF -section_id eda_
 set_global_assignment -name EDA_GENERATE_FUNCTIONAL_NETLIST OFF -section_id eda_board_design_symbol
 set_global_assignment -name EDA_GENERATE_FUNCTIONAL_NETLIST OFF -section_id eda_board_design_signal_integrity
 set_global_assignment -name EDA_GENERATE_FUNCTIONAL_NETLIST OFF -section_id eda_board_design_boundary_scan
+set_global_assignment -name VHDL_FILE seg7_pkg.vhd
 set_global_assignment -name VHDL_FILE adc_fsm.vhd
 set_global_assignment -name VHDL_FILE fifo_sync.vhd
 set_global_assignment -name VHDL_FILE pll.vhd
